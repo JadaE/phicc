@@ -36,7 +36,8 @@
     "retentionDays": 7
   },
   "queue": {
-    "dir": "~/discord-bridge/comms-bot/queue"
+    "dir": "~/discord-bridge/comms-bot/queue",
+    "requireOutboxSig": true
   },
   "wake": {
     "urlEnv": "COMMS_WEBHOOK_URL",

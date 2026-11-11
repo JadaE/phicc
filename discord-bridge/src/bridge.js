@@ -43,6 +43,27 @@ function looksLikeInjection(text) {
     || /\bsystem prompt\b/i.test(text);
 }
 
+const OUTBOX_KEYS = new Set([
+  'replyTo', 'channelId', 'text', 'final', 'sig', 'sentChunks', 'attempts', 'nextAttemptAt',
+]);
+const MAX_REWAKES = 2;
+
+function stripOutbound(text) {
+  return String(text)
+    .replace(/https?:\/\/(?:www\.)?(?:discord\.gg|discord(?:app)?\.com\/invite)\/\S+/gi, '[link removed]')
+    .replace(/\[([^\]]*)\]\((?:https?:\/\/|discord:\/\/)[^)]+\)/gi, '$1');
+}
+
+function isUnreachable(err) {
+  if (!err || err.code == null) return false;
+  const code = String(err.code);
+  return code === '10008' || code === '10003' || code === '404';
+}
+
+function rewakeBackoff(count) {
+  return Math.min(15 * 60 * 1000, 60 * 1000 * (2 ** Math.max(0, count - 1)));
+}
+
 function rateLimitDelay(err) {
   if (!err) return null;
   const status = err.status || err.statusCode || err.httpStatus;
@@ -95,15 +116,50 @@ class Bridge {
     this.stopAlerted = false;
     this.extraDenied = new Set();
     this.strikes = {};
+    this.rewakes = {};
     this.hmacKey = options.hmacKey || '';
     this.token = options.token || '';
     this.tokenLockDir = options.tokenLockDir;
     this.useLock = options.lock !== false;
     this.secrets = (options.secrets || []).filter((secret) => typeof secret === 'string' && secret.length >= 8);
-    this.alerter = options.alerter || new Alerter({ dir: path.join(this.queue.root, 'alerts'), log: this.log });
+    this.alerter = options.alerter || new Alerter({
+      dir: path.join(this.queue.root, 'alerts'),
+      url: options.alertUrl || '',
+      key: options.alertKey || '',
+      allowedHosts: options.alertHosts || (this.config.wake && this.config.wake.allowedHosts) || [],
+      fetchImpl: options.alertFetch,
+      log: this.log,
+    });
     this.loadRates();
     this.loadSecurity();
-    if (this.wake) this.wake.isStopped = () => this.killSwitchOn();
+    this.loadRewakes();
+    if (this.wake) {
+      this.wake.isStopped = () => this.killSwitchOn();
+      this.wake.allowSend = () => this.allowWake();
+    }
+  }
+
+  outboxSigRequired() {
+    return !this.config.queue || this.config.queue.requireOutboxSig !== false;
+  }
+
+  seal(record) {
+    if (!this.hmacKey || !record) return record;
+    const signed = signRecord(record, this.hmacKey);
+    record.sig = signed.sig;
+    return record;
+  }
+
+  allowWake() {
+    const gate = this.rates.checkGlobal(this.now());
+    if (!gate.ok) {
+      this.tripKillSwitch(gate.reason);
+      this.stopAlerted = true;
+      return false;
+    }
+    this.rates.commitGlobal(this.now());
+    this.saveRates();
+    return true;
   }
 
   botId() {
@@ -213,6 +269,47 @@ class Bridge {
     fs.writeFileSync(tmp, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
     fs.renameSync(tmp, this.securityPath());
     fs.chmodSync(this.securityPath(), 0o600);
+  }
+
+  rewakePath() {
+    return path.join(this.queue.root, 'state', 'rewakes.json');
+  }
+
+  loadRewakes() {
+    try {
+      if (!fs.existsSync(this.rewakePath())) return;
+      const data = JSON.parse(fs.readFileSync(this.rewakePath(), 'utf8'));
+      this.rewakes = data && typeof data === 'object' ? data : {};
+    } catch (err) {
+      this.log.warn({ event: 'rewake_state_unreadable', ...errorFields(err) });
+    }
+  }
+
+  saveRewakes() {
+    const dir = path.dirname(this.rewakePath());
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const tmp = `${this.rewakePath()}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify(this.rewakes)}\n`, { mode: 0o600 });
+    fs.renameSync(tmp, this.rewakePath());
+    fs.chmodSync(this.rewakePath(), 0o600);
+  }
+
+  async requestRewake(id) {
+    const rec = this.rewakes[id] || { count: 0, nextAt: 0 };
+    if (rec.count >= MAX_REWAKES) return false;
+    if (this.now() < Number(rec.nextAt || 0)) return false;
+    const gate = this.rates.checkGlobal(this.now());
+    if (!gate.ok) {
+      await this.tripKillSwitch(gate.reason);
+      this.stopAlerted = true;
+      return false;
+    }
+    rec.count += 1;
+    rec.nextAt = this.now() + rewakeBackoff(rec.count);
+    this.rewakes[id] = rec;
+    this.saveRewakes();
+    if (this.wake && typeof this.wake.notify === 'function') await this.wake.notify(id);
+    return true;
   }
 
   noteOutsider(userId) {
@@ -408,6 +505,12 @@ class Bridge {
       this.queue.removeSending(id);
       return { alreadyDone: true };
     }
+    if (this.queue.exists('dead', id)) {
+      this.queue.remove('outbox', id);
+      this.queue.removeSending(id);
+      await this.alert({ level: 'P0', reason: 'reply_rejected', detail: 'already_dead', messageId: id });
+      return { dead: true, reason: 'already_dead' };
+    }
     let reply = this.queue.read('outbox', id) || this.queue.readSending(id);
     if (!reply) return { missing: true };
     if (reply.final === false) return { waiting: true };
@@ -418,10 +521,21 @@ class Bridge {
       if (claimed.alreadyDone) return { alreadyDone: true };
       reply = claimed.record;
     }
-    if (this.hmacKey && !verifyRecord(reply, this.hmacKey)) return this.rejectReply(id, 'bad_signature');
+    if (!reply || typeof reply !== 'object' || typeof reply.text !== 'string'
+      || Object.keys(reply).some((key) => !OUTBOX_KEYS.has(key))) {
+      return this.rejectReply(id, 'bad_shape');
+    }
+    if (this.outboxSigRequired() && this.hmacKey && !verifyRecord(reply, this.hmacKey)) {
+      return this.rejectReply(id, 'bad_signature');
+    }
 
     const inbox = this.queue.read('inbox', id);
-    if (!inbox) return this.rejectReply(id, 'missing_inbox');
+    if (!inbox) {
+      this.queue.remove('outbox', id);
+      this.queue.removeSending(id);
+      await this.alert({ level: 'P0', reason: 'reply_rejected', detail: 'unknown_id', messageId: id });
+      return { rejected: true, reason: 'unknown_id' };
+    }
     if (this.hmacKey && !verifyRecord(inbox, this.hmacKey)) return this.rejectReply(id, 'bad_signature');
     const replyTo = String(reply.replyTo || '');
     if (replyTo !== String(id)) return this.rejectReply(id, 'reply_id_mismatch');
@@ -430,8 +544,9 @@ class Bridge {
       return this.rejectReply(id, 'channel_denied');
     }
 
+    const capped = stripOutbound(this.redactText(reply.text || ''));
     const chunks = chunkReply(
-      this.redactText(reply.text || ''),
+      capped,
       this.config.policy.maxReplyChars || 1900,
       this.config.policy.maxReplyChunks || 3,
     ).filter((chunk) => chunk.trim().length > 0);
@@ -444,7 +559,7 @@ class Bridge {
       for (let index = startAt; index < chunks.length; index += 1) {
         await this.replyWithRetry(message, chunks[index]);
         reply.sentChunks = index + 1;
-        this.queue.writeSending(id, reply);
+        this.queue.writeSending(id, this.seal(reply));
       }
       await this.swapReaction(message);
       this.queue.complete(id, { chunks: chunks.length });
@@ -455,7 +570,7 @@ class Bridge {
       if (partial && reply.attempts < 3) {
         const wait = Math.min(1000 * (2 ** (reply.attempts - 1)), 8000);
         reply.nextAttemptAt = new Date(this.now() + wait).toISOString();
-        this.queue.restoreClaim(id, reply);
+        this.queue.restoreClaim(id, this.seal(reply));
         this.log.warn({ event: 'send_retry', messageId: id, ...errorFields(err) });
         return { retry: true, attempts: reply.attempts };
       }
@@ -523,11 +638,16 @@ class Bridge {
       const message = await this.resolveMessage(this.client, item.channelId, item.discordMessageId);
       await this.replyWithRetry(message, TIMEOUT_NOTICE);
       item.timeoutNotified = true;
-      this.queue.overwrite('inbox', item.discordMessageId, item);
+      this.queue.overwrite('inbox', item.discordMessageId, this.seal(item));
+      await this.requestRewake(item.discordMessageId);
     } catch (err) {
+      if (isUnreachable(err)) {
+        this.queue.fail(item.discordMessageId, { error: 'unreachable' });
+        return;
+      }
       this.log.warn({ event: 'timeout_notice_failed', messageId: item.discordMessageId, ...errorFields(err) });
+      await this.requestRewake(item.discordMessageId);
     }
-    if (this.wake) await this.wake.notify(item.discordMessageId);
   }
 
   rewakeInbox() {
@@ -535,7 +655,7 @@ class Bridge {
     try { ids = this.queue.list('inbox'); } catch (err) { return; }
     for (const id of ids) {
       if (this.queue.exists('outbox', id)) continue;
-      this.wake.notify(id);
+      this.requestRewake(id);
     }
   }
 
@@ -629,11 +749,12 @@ function attachToClient(client, options = {}) {
   const env = options.env || process.env;
   if (config.features.enabled) assertReady(config, { localPath: loaded.localPath, env });
   if (options.adapter) {
-    const phiccApp = env.PHICC_APPLICATION_ID || '';
-    if (phiccApp && phiccApp === String(config.discord.applicationId)) {
-      const error = new Error('SAME_APPLICATION');
+    const phiccApp = String(env.PHICC_APPLICATION_ID || '');
+    const bridgeApp = String((config.discord && config.discord.applicationId) || '');
+    if (!phiccApp || phiccApp === bridgeApp) {
+      const error = new Error('ADAPTER_UNVERIFIED');
       error.name = 'BridgeConfigError';
-      error.code = 'SAME_APPLICATION';
+      error.code = 'ADAPTER_UNVERIFIED';
       throw error;
     }
   }
@@ -646,6 +767,9 @@ function attachToClient(client, options = {}) {
     hashAuthor: (id) => queue.authorLabel(id),
   });
   if (options.adapter) log.warn({ event: 'adapter_shares_process' });
+  if (config.queue && config.queue.requireOutboxSig === false) {
+    log.warn({ event: 'outbox_signature_optional' });
+  }
   const wake = options.wake || new WakeHandoff({
     url: env[config.wake.urlEnv] || '',
     key: env[config.wake.keyEnv] || '',
@@ -670,6 +794,10 @@ function attachToClient(client, options = {}) {
     rateLimits: options.rateLimits,
     intervalMs: options.intervalMs,
     hmacKey: options.hmacKey || env[config.wake.hmacEnv || 'QUEUE_HMAC_KEY'] || '',
+    alertUrl: options.alertUrl || env.ALERT_WEBHOOK_URL || '',
+    alertKey: options.alertKey || env.ALERT_WEBHOOK_KEY || '',
+    alertHosts: options.alertHosts || (config.wake && config.wake.allowedHosts) || [],
+    alertFetch: options.alertFetch,
     token: options.token || env[config.discord.tokenEnv] || env.DISCORD_TOKEN || '',
     tokenLockDir: options.tokenLockDir,
     lock: options.lock,

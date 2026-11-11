@@ -98,6 +98,7 @@ class WakeHandoff {
     this.holdUntil = 0;
     this.stopped = false;
     this.isStopped = options.isStopped || (() => false);
+    this.allowSend = options.allowSend;
     this.giveUpRetryMs = options.giveUpRetryMs == null ? 60000 : options.giveUpRetryMs;
     this.allowedHosts = options.allowedHosts || null;
   }
@@ -169,6 +170,11 @@ class WakeHandoff {
     }
 
     const batch = this.pending.splice(0, this.maxBatch);
+    if (typeof this.allowSend === 'function' && !this.allowSend(batch)) {
+      this.pending = [];
+      this.log({ event: 'wake_deferred', reason: 'spend_cap' });
+      return { deferred: true, reason: 'spend_cap' };
+    }
     const body = batch.length === 1 ? { msgId: batch[0] } : { msgIds: batch };
     let response;
     try {

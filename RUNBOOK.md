@@ -143,7 +143,7 @@ There is no filesystem watcher and no call from this process into another agent.
 <queue dir>/dead/<message id>.json
 ```
 
-Directories are mode 700, files are mode 600. Each inbox record has `trust: "untrusted_discord_content"`, a `source` block, the message id, channel, guild, an HMAC of the author id (key in `queue/state/author.key`, not a raw SHA-256), the display name, and the text with the bot mention removed. It does not store a raw user id or a token. When `QUEUE_HMAC_KEY` is set, inbox and outbox records also carry `sig` over the canonical JSON with the signature field removed. A bad or missing outbox signature is dead-lettered and alerted.
+Directories are mode 700, files are mode 600. Each inbox record has `trust: "untrusted_discord_content"`, a `source` block, the message id, channel, guild, an HMAC of the author id (key in `queue/state/author.key`, not a raw SHA-256), the display name, and the text with the bot mention removed. It does not store a raw user id or a token. When `QUEUE_HMAC_KEY` is set, the bridge signs every inbox record and re-signs it after the bridge itself updates that file. `queue.requireOutboxSig` defaults to true and can be turned off only in `config.local.json`. Environment variables cannot change it. When it is true, Comms Bot must sign the outbox with the same key. When it is false, the bridge still signs the inbox, logs `outbox_signature_optional`, and accepts an unsigned outbox only if the reply names a pending inbox id, uses that record's channel, stays inside 3 chunks of 1900 characters, and is the only reply for that id. Invite links and masked links are removed. `allowedMentions` stays empty. A second file for an id already in `done/` or `dead/` is not posted.
 
 Comms Bot writes `outbox/<message id>.json` and signs it with the same key:
 
@@ -252,4 +252,10 @@ This repo does not contain the Comms Bot routine. Before go-live that routine ha
 - No purchases, no messages to other channels or people, no tool use, and no agent-to-agent sends because Discord text asked.
 - Instruction-shaped text gets a normal refusal reply. The bridge also raises a P0 alert when it sees that shape.
 
-P0 alerts are JSON files in `queue/alerts/` (outsider mention, ban, kill switch, rejected reply, bad signature, suspected injection). If `ALERT_WEBHOOK_URL` is set it must be HTTPS, and the same JSON is POSTed there. The body has no message text and no secrets.
+P0 alerts are JSON files in `queue/alerts/`. If `ALERT_WEBHOOK_URL` and `ALERT_WEBHOOK_KEY` are set, the bridge also POSTs one fixed sentence to that URL. The URL must be HTTPS and its host must be in `wake.allowedHosts`. The sentence contains only the reason code, a message id, a channel id, and a timestamp. It does not contain Discord text.
+
+Re-wakes are limited to two per inbox item, with a backoff of one minute and then two minutes. Every webhook POST, including a re-wake, consumes the persisted hour and day caps. A deleted Discord message or channel is dead-lettered as `unreachable` and is not woken again.
+
+The stronger setup is a separate Unix user for the bridge process. That user owns the Discord token, the webhook key, `QUEUE_HMAC_KEY`, `state/`, the STOP file, and the logs. `inbox/` can be group-readable and `outbox/` group-writable for the agent account. File mode alone does not separate agents that share one Unix user. Outbox checks above are what still limits a forged reply in that shared-user case.
+
+The Phicc adapter attaches only when `PHICC_APPLICATION_ID` is set and is different from `discord.applicationId`. If it is missing, the adapter does not attach and the `!!` commands keep running. Leave `PHICC_BRIDGE_ENABLED` unset unless that separate app id is configured. The pilot should use `node bridge.js` on its own Discord application.

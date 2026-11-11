@@ -37,7 +37,7 @@ function defaultConfig() {
       commsTimeoutMinutes: 10,
       retentionDays: 7,
     },
-    queue: { dir: '~/discord-bridge/comms-bot/queue' },
+    queue: { dir: '~/discord-bridge/comms-bot/queue', requireOutboxSig: true },
     wake: {
       urlEnv: 'COMMS_WEBHOOK_URL',
       keyEnv: 'COMMS_WEBHOOK_KEY',
@@ -193,6 +193,8 @@ function clampConfig(config) {
   config.wake.maxPerHour = Math.min(wakeCap, limits.globalPerHour);
   if (config.policy.usersOnly == null) config.policy.usersOnly = true;
   if (!Array.isArray(config.discord.deniedUserIds)) config.discord.deniedUserIds = [];
+  if (!config.queue) config.queue = {};
+  if (config.queue.requireOutboxSig !== false) config.queue.requireOutboxSig = true;
   return config;
 }
 

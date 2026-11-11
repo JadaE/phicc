@@ -40,7 +40,7 @@ function fakeMessage(overrides = {}) {
     author: {
       id: userId,
       bot: Boolean(overrides.bot),
-      username: overrides.username || 'jada',
+      username: overrides.username || 'mina',
     },
     member: overrides.member === null ? null : {
       displayName: overrides.displayName || 'Mina',

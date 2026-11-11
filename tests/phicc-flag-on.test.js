@@ -20,6 +20,7 @@ process.env.DBR_WAKE_QUIETMS = '3600000';
 process.env.COMMS_WEBHOOK_URL = 'https://hooks.example/wake';
 process.env.COMMS_WEBHOOK_KEY = 'test-webhook-key';
 process.env.QUEUE_HMAC_KEY = 'test-hmac-key-value';
+process.env.PHICC_APPLICATION_ID = '100000000000000998';
 
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');

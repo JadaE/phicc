@@ -80,6 +80,27 @@ class RateLimiter {
     this.daily.push(stamp);
   }
 
+  checkGlobal(now) {
+    const stamp = now == null ? Date.now() : now;
+    this.global = prune(this.global, stamp, HOUR_MS);
+    if (this.global.length >= this.limits.globalPerHour) {
+      return { ok: false, reason: 'rate_limited_global' };
+    }
+    this.daily = prune(this.daily, stamp, DAY_MS);
+    if (this.daily.length >= this.limits.globalPerDay) {
+      return { ok: false, reason: 'rate_limited_daily' };
+    }
+    return { ok: true };
+  }
+
+  commitGlobal(now) {
+    const stamp = now == null ? Date.now() : now;
+    this.global = prune(this.global, stamp, HOUR_MS);
+    this.global.push(stamp);
+    this.daily = prune(this.daily, stamp, DAY_MS);
+    this.daily.push(stamp);
+  }
+
   snapshot() {
     return {
       users: [...this.users.entries()],
