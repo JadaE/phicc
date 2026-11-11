@@ -10,13 +10,16 @@ process.env.DBR_FEATURES_ENABLED = 'true';
 process.env.DBR_QUEUE_DIR = path.join(root, 'queue');
 process.env.DBR_FEATURES_KILLSWITCHFILE = path.join(root, 'STOP');
 process.env.DBR_LOGGING_DIR = path.join(root, 'logs');
-process.env.DBR_DISCORD_GUILDIDS = '111';
-process.env.DBR_DISCORD_CHANNELIDS = '222';
-process.env.DBR_DISCORD_ALLOWEDUSERIDS = '333';
-process.env.DBR_DISCORD_APPLICATIONID = '999';
-process.env.DBR_DISCORD_BOTUSERID = '444';
-delete process.env.COMMS_WEBHOOK_URL;
-delete process.env.COMMS_WEBHOOK_KEY;
+process.env.DBR_DISCORD_GUILDIDS = '100000000000000111';
+process.env.DBR_DISCORD_CHANNELIDS = '100000000000000222';
+process.env.DBR_DISCORD_ALLOWEDUSERIDS = '100000000000000333';
+process.env.DBR_DISCORD_APPLICATIONID = '100000000000000999';
+process.env.DBR_DISCORD_BOTUSERID = '100000000000000444';
+process.env.DBR_WAKE_ALLOWEDHOSTS = 'hooks.example';
+process.env.DBR_WAKE_QUIETMS = '3600000';
+process.env.COMMS_WEBHOOK_URL = 'https://hooks.example/wake';
+process.env.COMMS_WEBHOOK_KEY = 'test-webhook-key';
+process.env.QUEUE_HMAC_KEY = 'test-hmac-key-value';
 
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -26,11 +29,11 @@ function mention(id, content) {
   return {
     id,
     content,
-    author: { id: '333', bot: false, username: 'jada' },
-    member: { displayName: 'Jada', roles: { cache: { has: () => false } } },
-    guildId: '111',
-    channelId: '222',
-    channel: { id: '222', isThread: () => false },
+    author: { id: '100000000000000333', bot: false, username: 'mina' },
+    member: { displayName: 'Mina', roles: { cache: { has: () => false } } },
+    guildId: '100000000000000111',
+    channelId: '100000000000000222',
+    channel: { id: '100000000000000222', isThread: () => false },
     webhookId: null,
     createdTimestamp: 1700000000000,
     mentions: {
@@ -62,14 +65,14 @@ describe('Phicc with the bridge flag on', () => {
   it('keeps !! commands on the old path and sends mentions only to the bridge', async () => {
     assert.ok(bot.phiccBridge);
     assert.equal(bot.listenerCount('messageCreate'), 2);
-    bot.user = { id: '444' };
+    bot.user = { id: '100000000000000444' };
     const seen = [];
     const command = bot.commands.get('rulereader');
     const original = command.execute;
     command.execute = (message) => seen.push(message.content);
     try {
       await deliver(mention('8001', '!!rulereader'));
-      await deliver(mention('8002', '<@444> hello from discord'));
+      await deliver(mention('8002', '<@100000000000000444> hello from discord'));
     } finally {
       command.execute = original;
     }
@@ -89,8 +92,8 @@ describe('Phicc with the bridge flag on', () => {
     const original = command.execute;
     command.execute = (message, args) => seen.push({ content: message.content, args });
     try {
-      onMessageCreate({ content: '!!reactionroletest', author: { id: '333', bot: false } });
-      await deliver(mention('8003', '<@444> are you there'));
+      onMessageCreate({ content: '!!reactionroletest', author: { id: '100000000000000333', bot: false } });
+      await deliver(mention('8003', '<@100000000000000444> are you there'));
     } finally {
       command.execute = original;
     }

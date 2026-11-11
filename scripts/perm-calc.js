@@ -6,6 +6,7 @@ function main(argv) {
   const names = argv.slice(2);
   if (names.length === 0) {
     console.log(`68608 base (view, send, history) = ${PRESETS.base}`);
+    console.log(`68672 base+reactions = ${PRESETS.reactions}`);
     console.log(`85056 embeds+reactions = ${PRESETS.embedsAndReactions}`);
     console.log(`274877992000 threads = ${PRESETS.withThreads}`);
     return PRESETS;

@@ -74,9 +74,14 @@ bot.on('messageCreate', onMessageCreate);
 // Anything that starts with !! returns before the bridge sees it.
 if (process.env.PHICC_BRIDGE_ENABLED === 'true') {
     try {
-        bot.phiccBridge = require('./discord-bridge').attachToClient(bot, { ignorePrefixes: [prefix] });
+        bot.phiccBridge = require('./discord-bridge').attachToClient(bot, {
+            ignorePrefixes: [prefix],
+            adapter: true,
+        });
     } catch (err) {
-        console.error('discord bridge failed to attach; existing !! commands are still active');
+        const name = err && err.name ? err.name : 'Error';
+        const code = err && err.code ? err.code : 'ATTACH_FAILED';
+        console.error(JSON.stringify({ event: 'bridge_attach_failed', name: name, code: code }));
     }
 }
 

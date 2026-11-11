@@ -19,8 +19,11 @@ function safeCut(rest, maxLen) {
   const head = rest.slice(0, cut);
   const open = head.lastIndexOf('<');
   const close = head.lastIndexOf('>');
-  if (open > close && open >= floor) cut = open;
-  if (cut <= 0) cut = Math.min(maxLen, rest.length);
+  if (open > close) {
+    if (open > 0) cut = open;
+    else return 0;
+  }
+  if (cut <= 0) return 0;
   return cut;
 }
 
@@ -43,15 +46,19 @@ function chunkReply(text, maxLen = MAX_CHUNK_LEN, maxChunks = MAX_CHUNKS) {
       break;
     }
     const lastSlot = chunks.length === pieces - 1;
-    if (lastSlot) {
-      const room = Math.max(0, limit - TRUNCATION_NOTE.length);
-      chunks.push(rest.slice(0, room) + TRUNCATION_NOTE);
-      rest = '';
-      break;
-    }
-    const cut = safeCut(rest, limit);
-    chunks.push(rest.slice(0, cut));
+    const budget = lastSlot ? Math.max(1, limit - TRUNCATION_NOTE.length) : limit;
+    let cut = safeCut(rest, budget);
+    if (cut <= 0) cut = Math.min(budget, rest.length);
+    let piece = rest.slice(0, cut);
     rest = rest.slice(cut);
+    if (lastSlot && rest.length > 0) {
+      if (piece.length + TRUNCATION_NOTE.length > limit) {
+        piece = piece.slice(0, budget);
+      }
+      piece += TRUNCATION_NOTE;
+      rest = '';
+    }
+    chunks.push(piece);
   }
   return chunks;
 }

@@ -43,7 +43,7 @@ function fakeMessage(overrides = {}) {
       username: overrides.username || 'jada',
     },
     member: overrides.member === null ? null : {
-      displayName: overrides.displayName || 'Jada',
+      displayName: overrides.displayName || 'Mina',
       roles: {
         cache: {
           has(id) { return (overrides.roles || []).includes(id); },

@@ -9,5 +9,5 @@ description = "Discord bot token"
 regex = '''(?i)\b[a-z0-9_-]{24,}\.[a-z0-9_-]{6}\.[a-z0-9_-]{27,}'''
 
 [allowlist]
-description = "placeholders and docs that name env vars without values"
-paths = ['''config\.example\.json''', '''tests/''']
+description = "placeholder config only; tests stay scanned"
+paths = ['''(^|/)config\.example\.json$''']

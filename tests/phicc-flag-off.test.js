@@ -31,7 +31,8 @@ describe('Phicc with the bridge flag off', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
     assert.equal(pkg.name, 'meeseek');
     assert.equal(pkg.dependencies['discord.js'], '^13.6.0');
-    assert.equal(pkg.dependencies['discord.io'], '^2.5.3');
+    assert.equal(pkg.dependencies['discord.io'], undefined);
+    assert.equal(pkg.dependencies.winston, undefined);
     assert.equal(fs.existsSync(path.join(__dirname, '..', 'LICENSE')), false);
   });
 

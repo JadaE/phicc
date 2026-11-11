@@ -10,11 +10,12 @@
     "channelIds": ["YOUR_TEST_CHANNEL_ID"],
     "allowedUserIds": ["YOUR_USER_ID"],
     "allowedRoleIds": [],
-    "allowDMs": false,
+    "deniedUserIds": [],
     "allowThreads": false
   },
   "policy": {
     "requireMention": true,
+    "usersOnly": true,
     "ignorePrefixes": ["!!"],
     "responseMode": "reply",
     "reactions": {
@@ -26,11 +27,13 @@
     "rateLimits": {
       "perUserPerMin": 3,
       "perChannelPerMin": 10,
-      "globalPerHour": 60
+      "globalPerHour": 10,
+      "globalPerDay": 50
     },
     "maxReplyChunks": 3,
     "maxReplyChars": 1900,
-    "commsTimeoutMinutes": 10
+    "commsTimeoutMinutes": 10,
+    "retentionDays": 7
   },
   "queue": {
     "dir": "~/discord-bridge/comms-bot/queue"
@@ -38,9 +41,11 @@
   "wake": {
     "urlEnv": "COMMS_WEBHOOK_URL",
     "keyEnv": "COMMS_WEBHOOK_KEY",
+    "hmacEnv": "QUEUE_HMAC_KEY",
+    "allowedHosts": ["YOUR_WEBHOOK_HOST"],
     "coalesceQuietMs": 1500,
     "coalesceMaxBatch": 5,
-    "maxPerHour": 200
+    "maxPerHour": 10
   },
   "features": {
     "enabled": false,

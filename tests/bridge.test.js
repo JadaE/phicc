@@ -63,7 +63,7 @@ describe('bridge message path', () => {
     assert.deepEqual(reactions, ['👀']);
     const stored = ctx.queue.read('inbox', '5001');
     assert.equal(stored.text, 'hello there');
-    assert.equal(stored.authorDisplayName, 'Jada');
+    assert.equal(stored.authorDisplayName, 'Mina');
     assert.equal(JSON.stringify(stored).includes('"333"'), false);
     assert.equal(ctx.queue.list('inbox').length, 1);
   });
@@ -85,7 +85,8 @@ describe('bridge message path', () => {
       content: '!!rulereader',
     }))).reason, 'prefix_command');
     assert.deepEqual(ctx.queue.list('inbox'), []);
-    assert.equal(ctx.log.entries.some((entry) => entry.reason === 'not_mention'), true);
+    assert.equal(ctx.log.entries.some((entry) => entry.reason === 'not_mention'), false);
+    assert.equal(ctx.log.entries.some((entry) => entry.reason === 'user_denied'), true);
     assert.equal(ctx.log.entries.some((entry) => entry.reason === 'prefix_command'), false);
   });
 

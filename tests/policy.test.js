@@ -22,8 +22,13 @@ describe('policy allowlists and mention gate', () => {
     assert.equal(result.guildId, '111');
   });
 
-  it('accepts an allowlisted role when the user id is not listed', () => {
-    const result = decide(fakeMessage({ userId: '777', roles: ['555'] }));
+  it('accepts an allowlisted role only when usersOnly is off', () => {
+    const blocked = enabledConfig();
+    blocked.policy.usersOnly = true;
+    assert.equal(decide(fakeMessage({ userId: '777', roles: ['555'] }), blocked).reason, 'user_denied');
+    const config = enabledConfig();
+    config.policy.usersOnly = false;
+    const result = decide(fakeMessage({ userId: '777', roles: ['555'] }), config);
     assert.equal(result.allow, true);
   });
 
@@ -67,6 +72,11 @@ describe('policy allowlists and mention gate', () => {
   });
 
   it('lets a thread through only when threads are enabled and the parent is listed', () => {
+    const notAThread = decide(fakeMessage({
+      channel: { id: '3333', parentId: '222', isThread: true, parent: { type: 'GUILD_CATEGORY' } },
+      channelId: '3333',
+    }));
+    assert.equal(notAThread.reason, 'channel_denied');
     const denied = decide(fakeMessage({
       thread: true,
       channelId: '3333',

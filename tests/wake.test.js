@@ -148,6 +148,32 @@ describe('comms bot wake handoff', () => {
     );
   });
 
+  it('refuses plain http and keeps ids after repeated wake failures', async () => {
+    await assert.rejects(
+      postWebhook({ url: 'http://hooks.example/wake', key: 'test-webhook-key', body: {} }),
+      (err) => err.code === 'WEBHOOK_HTTPS' && !err.message.includes('test-webhook-key'),
+    );
+    const failing = harness({
+      giveUpRetryMs: 60000,
+      fetchImpl: async () => {
+        failing.calls.push({ body: {} });
+        return { status: 500, bodyText: 'down', retryAfterMs: 0 };
+      },
+    });
+    await failing.wake.notify('91');
+    await failing.timers[0].fn();
+    while (failing.calls.length < 6) {
+      const timer = failing.timers.at(-1);
+      assert.ok(timer);
+      await timer.fn();
+    }
+    assert.ok(failing.wake.pending.includes('91'));
+    assert.equal(failing.logs.some((entry) => entry.event === 'wake_gave_up' && entry.requeued === true), true);
+    failing.wake.isStopped = () => true;
+    await failing.wake.flush();
+    assert.deepEqual(failing.wake.pending, []);
+  });
+
   it('posts JSON with a bearer token through the HTTP client without opening a socket', async () => {
     const original = https.request;
     let captured = null;

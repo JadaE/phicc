@@ -30,6 +30,16 @@ function hashId(id) {
   return crypto.createHash('sha256').update(String(id)).digest('hex');
 }
 
+function redactSecrets(value, secrets) {
+  let text = redact(value);
+  for (const secret of secrets || []) {
+    if (typeof secret !== 'string' || secret.length < 8) continue;
+    if (!text.includes(secret)) continue;
+    text = text.split(secret).join('[redacted]');
+  }
+  return text;
+}
+
 function redactValue(value, depth) {
   if (value == null) return value;
   if (typeof value === 'string') return redact(value);
@@ -50,6 +60,7 @@ function redactValue(value, depth) {
 module.exports = {
   TOKEN_RE,
   redact,
+  redactSecrets,
   redactValue,
   hashId,
 };

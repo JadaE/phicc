@@ -9,23 +9,24 @@
     "main": "bot.js",
 
     "scripts": {
+
         "start": "node bot.js",
+
         "bridge": "node bridge.js",
+
         "test": "node --test --experimental-test-isolation=process tests/*.test.js",
+
         "perms": "node scripts/perm-calc.js"
+
     },
 
     "author": "Jada Ebong",
 
     "dependencies": {
 
-        "discord.io": "^2.5.3",
-
         "discord.js": "^13.6.0",
 
-        "dotenv": "^16.0.0",
-
-        "winston": "^3.6.0"
+        "dotenv": "^16.0.0"
 
     }
 

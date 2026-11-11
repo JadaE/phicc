@@ -15,6 +15,7 @@ const PERMISSIONS = Object.freeze({
 });
 
 const BASE_NAMES = ['VIEW_CHANNEL', 'SEND_MESSAGES', 'READ_MESSAGE_HISTORY'];
+const REACTION_NAMES = BASE_NAMES.concat(['ADD_REACTIONS']);
 const EMBED_REACTION_NAMES = BASE_NAMES.concat(['EMBED_LINKS', 'ADD_REACTIONS']);
 const THREAD_NAMES = EMBED_REACTION_NAMES.concat(['SEND_MESSAGES_IN_THREADS']);
 
@@ -43,6 +44,7 @@ function permissionInteger(names) {
 
 const PRESETS = Object.freeze({
   base: permissionInteger(BASE_NAMES),
+  reactions: permissionInteger(REACTION_NAMES),
   embedsAndReactions: permissionInteger(EMBED_REACTION_NAMES),
   withThreads: permissionInteger(THREAD_NAMES),
 });
@@ -51,6 +53,7 @@ module.exports = {
   PERMISSIONS,
   PRESETS,
   BASE_NAMES,
+  REACTION_NAMES,
   EMBED_REACTION_NAMES,
   THREAD_NAMES,
   permissionInteger,

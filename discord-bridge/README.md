@@ -26,6 +26,6 @@ standalone.js      process entry used by ../bridge.js
 4. Put the token in the env var named by `discord.tokenEnv`. Put the routine URL and bearer key in `COMMS_WEBHOOK_URL` and `COMMS_WEBHOOK_KEY`.
 5. Run `node bridge.js`. With `features.enabled` false, it does not log in.
 
-Permissions: **68608** (view, send, history) or **85056** (also embeds and reactions). Never Administrator. Intents: **513**. No Message Content.
+Permissions: **68608** (view, send, history) or **68672** (also reactions). **85056** adds embeds, which this bridge does not send. Never Administrator. Intents: **513**. No Message Content. `usersOnly` defaults to true. Enabled startup requires an HTTPS webhook whose host is allowlisted, plus `QUEUE_HMAC_KEY`.
 
 `node --test tests/` from the repo root runs the offline suite. Discord and the webhook are mocked.

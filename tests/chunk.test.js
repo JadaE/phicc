@@ -33,6 +33,16 @@ describe('reply chunking', () => {
     assert.equal(chunks[0].length, MAX_CHUNK_LEN);
   });
 
+  it('does not split a mention token on the final chunk', () => {
+    const mention = '<@100000000000000099>';
+    const text = `${'x'.repeat(30)}${mention}${'y'.repeat(40)}`;
+    const chunks = chunkReply(text, 50, 1);
+    assert.equal(chunks.length, 1);
+    assert.ok(chunks[0].length <= 50);
+    assert.equal(/<@(?!\d+>)/.test(chunks[0]), false);
+    assert.ok(chunks[0].endsWith(TRUNCATION_NOTE));
+  });
+
   it('does not add a truncation note when the text fits in 3 chunks', () => {
     const chunks = chunkReply('y'.repeat(4000));
     assert.equal(chunks.length, 3);

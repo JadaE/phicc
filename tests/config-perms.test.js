@@ -30,7 +30,7 @@ describe('config, intents, and permissions', () => {
     assert.throws(() => assertReady({
       ...loaded.config,
       features: { ...loaded.config.features, enabled: true },
-    }), /YOUR_/);
+    }), /PLACEHOLDER/);
 
     const root = tempDir('phicc-config-');
     dirs.push(root);
@@ -40,20 +40,32 @@ describe('config, intents, and permissions', () => {
     fs.writeFileSync(localPath, JSON.stringify({
       features: { enabled: true },
       discord: {
-        applicationId: '123',
-        guildIds: ['111'],
-        channelIds: ['222'],
-        allowedUserIds: ['333'],
+        applicationId: '100000000000000999',
+        guildIds: ['100000000000000111'],
+        channelIds: ['100000000000000222'],
+        allowedUserIds: ['100000000000000333'],
+        allowedRoleIds: [],
       },
+      wake: { allowedHosts: ['hooks.example'] },
+      policy: { usersOnly: true, requireMention: true },
     }));
     fs.chmodSync(localPath, 0o644);
     const loose = loadConfig({ root, env: {} });
     assert.throws(() => assertReady(loose.config, { localPath: loose.localPath }), /chmod 600/);
     fs.chmodSync(localPath, 0o600);
+    const readyEnv = {
+      COMMS_WEBHOOK_URL: 'https://hooks.example/wake',
+      COMMS_WEBHOOK_KEY: 'test-webhook-key',
+      QUEUE_HMAC_KEY: 'test-hmac-key-value',
+    };
     const tight = loadConfig({ root, env: {} });
-    assert.doesNotThrow(() => assertReady(tight.config, { localPath: tight.localPath }));
+    assert.doesNotThrow(() => assertReady(tight.config, { localPath: tight.localPath, env: readyEnv }));
     assert.equal(tight.config.features.enabled, true);
-    assert.equal(tight.config.discord.guildIds[0], '111');
+    assert.equal(tight.config.discord.guildIds[0], '100000000000000111');
+    assert.throws(() => assertReady(tight.config, {
+      localPath: tight.localPath,
+      env: { ...readyEnv, COMMS_WEBHOOK_URL: 'http://hooks.example/wake' },
+    }), /WEBHOOK_HTTPS/);
   });
 
   it('lets DBR_ env vars override the example file', () => {
@@ -92,6 +104,7 @@ describe('config, intents, and permissions', () => {
 
   it('documents 68608 and 85056 and refuses ADMINISTRATOR', () => {
     assert.equal(PRESETS.base, 68608);
+    assert.equal(PRESETS.reactions, 68672);
     assert.equal(PRESETS.embedsAndReactions, 85056);
     assert.equal(PRESETS.withThreads, 274877992000);
     assert.equal(permissionInteger(['VIEW_CHANNEL', 'SEND_MESSAGES', 'READ_MESSAGE_HISTORY']), 68608);
