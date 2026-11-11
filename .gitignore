@@ -1,5 +1,12 @@
 
 .env
+.env*
 auth.json
+config.local.json
 node_modules/
 secretStuff.txt
+queue/
+logs/
+keys/
+.herenow/
+*.keystore

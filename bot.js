@@ -2,8 +2,15 @@ require('dotenv').config();
 // var Discord = require('discord.io');
 const Discord = require('discord.js');
 // const logger = require('winston');
-const auth = require('./auth.json');
 const fs = require('fs');
+const path = require('path');
+// auth.json is optional. Login uses DISCORD_TOKEN. When the file exists, the
+// Client options below stay the same as they were when it was required.
+let auth = {};
+const authPath = path.join(__dirname, 'auth.json');
+if (fs.existsSync(authPath)) {
+    auth = require(authPath);
+}
 
 // Configure logger settings
 // logger.remove(logger.transports.Console);
@@ -30,8 +37,10 @@ for (const file of commandFiles){
     bot.commands.set(command.name, command);
 }
 
-//Login as bot
-bot.login(process.env.DISCORD_TOKEN);
+//Login as bot. Requiring this file (unit tests) must not open a gateway.
+if (require.main === module) {
+    bot.login(process.env.DISCORD_TOKEN);
+}
 bot.once('ready', () => {
     console.log(`Logged in as ${bot.user.tag}!`);
 });
@@ -44,7 +53,7 @@ bot.once('ready', () => {
 const prefix = '!!'
 // //pt 2
 
-bot.on('messageCreate', msg  => {
+function onMessageCreate(msg) {
     if(!msg.content.startsWith(prefix) || msg.author.bot)
         return;
     const args = msg.content.slice(prefix.length).split(/ +/);
@@ -57,7 +66,26 @@ bot.on('messageCreate', msg  => {
     } else {
         console.log(command);
     }
-});
+}
+
+bot.on('messageCreate', onMessageCreate);
+
+// Optional mention bridge. Off unless PHICC_BRIDGE_ENABLED=true.
+// Anything that starts with !! returns before the bridge sees it.
+if (process.env.PHICC_BRIDGE_ENABLED === 'true') {
+    try {
+        bot.phiccBridge = require('./discord-bridge').attachToClient(bot, {
+            ignorePrefixes: [prefix],
+            adapter: true,
+        });
+    } catch (err) {
+        const name = err && err.name ? err.name : 'Error';
+        const code = err && err.code ? err.code : 'ATTACH_FAILED';
+        console.error(JSON.stringify({ event: 'bridge_attach_failed', name: name, code: code }));
+    }
+}
+
+module.exports = { bot, onMessageCreate, prefix, Discord };
 
 // bot.on('interactionCreate', async interaction => {
 //     if(!interaction.isCommand()) 

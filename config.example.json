@@ -1,0 +1,60 @@
+{
+  "botName": "comms-bot",
+  "env": "dev",
+  "discord": {
+    "tokenEnv": "DISCORD_TOKEN_DEV",
+    "applicationId": "YOUR_APPLICATION_ID",
+    "botUserId": "",
+    "intents": ["Guilds", "GuildMessages"],
+    "guildIds": ["YOUR_GUILD_ID"],
+    "channelIds": ["YOUR_TEST_CHANNEL_ID"],
+    "allowedUserIds": ["YOUR_USER_ID"],
+    "allowedRoleIds": [],
+    "deniedUserIds": [],
+    "allowThreads": false
+  },
+  "policy": {
+    "requireMention": true,
+    "usersOnly": true,
+    "ignorePrefixes": ["!!"],
+    "responseMode": "reply",
+    "reactions": {
+      "ack": "👀",
+      "done": "✅",
+      "fail": "❌",
+      "enabled": true
+    },
+    "rateLimits": {
+      "perUserPerMin": 3,
+      "perChannelPerMin": 10,
+      "globalPerHour": 10,
+      "globalPerDay": 50
+    },
+    "maxReplyChunks": 3,
+    "maxReplyChars": 1900,
+    "commsTimeoutMinutes": 10,
+    "retentionDays": 7
+  },
+  "queue": {
+    "dir": "~/discord-bridge/comms-bot/queue",
+    "requireOutboxSig": true
+  },
+  "wake": {
+    "urlEnv": "COMMS_WEBHOOK_URL",
+    "keyEnv": "COMMS_WEBHOOK_KEY",
+    "hmacEnv": "QUEUE_HMAC_KEY",
+    "allowedHosts": ["YOUR_WEBHOOK_HOST"],
+    "coalesceQuietMs": 1500,
+    "coalesceMaxBatch": 5,
+    "maxPerHour": 10
+  },
+  "features": {
+    "enabled": false,
+    "killSwitchFile": "~/discord-bridge/comms-bot/STOP"
+  },
+  "logging": {
+    "level": "info",
+    "dir": "~/discord-bridge/comms-bot/logs",
+    "logBodies": false
+  }
+}
