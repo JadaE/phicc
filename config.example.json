@@ -1,0 +1,54 @@
+{
+  "botName": "comms-bot",
+  "env": "dev",
+  "discord": {
+    "tokenEnv": "DISCORD_TOKEN_DEV",
+    "applicationId": "YOUR_APPLICATION_ID",
+    "botUserId": "",
+    "intents": ["Guilds", "GuildMessages"],
+    "guildIds": ["YOUR_GUILD_ID"],
+    "channelIds": ["YOUR_TEST_CHANNEL_ID"],
+    "allowedUserIds": ["YOUR_USER_ID"],
+    "allowedRoleIds": [],
+    "allowDMs": false,
+    "allowThreads": false
+  },
+  "policy": {
+    "requireMention": true,
+    "ignorePrefixes": ["!!"],
+    "responseMode": "reply",
+    "reactions": {
+      "ack": "👀",
+      "done": "✅",
+      "fail": "❌",
+      "enabled": true
+    },
+    "rateLimits": {
+      "perUserPerMin": 3,
+      "perChannelPerMin": 10,
+      "globalPerHour": 60
+    },
+    "maxReplyChunks": 3,
+    "maxReplyChars": 1900,
+    "commsTimeoutMinutes": 10
+  },
+  "queue": {
+    "dir": "~/discord-bridge/comms-bot/queue"
+  },
+  "wake": {
+    "urlEnv": "COMMS_WEBHOOK_URL",
+    "keyEnv": "COMMS_WEBHOOK_KEY",
+    "coalesceQuietMs": 1500,
+    "coalesceMaxBatch": 5,
+    "maxPerHour": 200
+  },
+  "features": {
+    "enabled": false,
+    "killSwitchFile": "~/discord-bridge/comms-bot/STOP"
+  },
+  "logging": {
+    "level": "info",
+    "dir": "~/discord-bridge/comms-bot/logs",
+    "logBodies": false
+  }
+}

@@ -8,6 +8,13 @@
 
     "main": "bot.js",
 
+    "scripts": {
+        "start": "node bot.js",
+        "bridge": "node bridge.js",
+        "test": "node --test --experimental-test-isolation=process tests/*.test.js",
+        "perms": "node scripts/perm-calc.js"
+    },
+
     "author": "Jada Ebong",
 
     "dependencies": {
