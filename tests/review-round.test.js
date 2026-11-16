@@ -181,16 +181,24 @@ describe('review round fixes', () => {
     assert.ok(ctx.wakes.includes('7601'));
 
     await ctx.bridge.handleMessage(fakeMessage({ id: '7602' }));
+    const waitingInbox = ctx.queue.read('inbox', '7602');
+    waitingInbox.enqueuedAt = new Date(clock - (11 * 60 * 1000)).toISOString();
+    ctx.queue.overwrite('inbox', '7602', waitingInbox);
     ctx.queue.overwrite('outbox', '7602', { replyTo: '7602', channelId: '222', text: 'later', final: false });
     const waiting = await ctx.bridge.flushOutbox();
     assert.equal(waiting[0].waiting, true);
     const calls = [];
-    ctx.bridge.resolveMessage = async () => fakeMessage({
-      reply: async (payload) => { calls.push(payload.content); },
-    });
+    ctx.bridge.resolveMessage = async (_client, _channel, id) => {
+      if (id === '7601') throw Object.assign(new Error('missing'), { code: 'MISSING' });
+      return fakeMessage({
+        id,
+        reply: async (payload) => { calls.push({ id, content: payload.content }); },
+      });
+    };
     await ctx.bridge.checkTimeouts();
     assert.equal(calls.length, 1);
-    assert.match(calls[0], /Still working/);
+    assert.equal(calls[0].id, '7602');
+    assert.match(calls[0].content, /Still working/);
   });
 
   it('rejects an empty reply, resumes a later chunk, and will not send a finished id twice', async () => {

@@ -73,7 +73,12 @@ describe('policy allowlists and mention gate', () => {
 
   it('lets a thread through only when threads are enabled and the parent is listed', () => {
     const notAThread = decide(fakeMessage({
-      channel: { id: '3333', parentId: '222', isThread: true, parent: { type: 'GUILD_CATEGORY' } },
+      channel: {
+        id: '3333',
+        parentId: '222',
+        isThread() { return true; },
+        parent: { type: 'GUILD_CATEGORY' },
+      },
       channelId: '3333',
     }));
     assert.equal(notAThread.reason, 'channel_denied');

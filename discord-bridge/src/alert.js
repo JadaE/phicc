@@ -15,7 +15,7 @@ function fieldOrNone(value) {
 function alertTemplate(entry) {
   const reason = /^[a-z_]{1,40}$/.test(entry.reason || '') ? entry.reason : 'malformed';
   const at = typeof entry.at === 'string' && entry.at.length <= 40 ? entry.at : 'none';
-  return `P0 Discord bridge alert: ${reason} (message ${fieldOrNone(entry.messageId)}, channel ${fieldOrNone(entry.channelId)}) at ${at}. No content included. Per Jada's standing rule: no action taken; Jada to decide.`;
+  return `P0 Discord bridge alert: ${reason} (message ${fieldOrNone(entry.messageId)}, channel ${fieldOrNone(entry.channelId)}) at ${at}. No content included. No action was taken. The operator decides what happens next.`;
 }
 
 class Alerter {

@@ -99,6 +99,7 @@ class WakeHandoff {
     this.stopped = false;
     this.isStopped = options.isStopped || (() => false);
     this.allowSend = options.allowSend;
+    this.deferFor = options.deferFor;
     this.giveUpRetryMs = options.giveUpRetryMs == null ? 60000 : options.giveUpRetryMs;
     this.allowedHosts = options.allowedHosts || null;
   }
@@ -171,9 +172,12 @@ class WakeHandoff {
 
     const batch = this.pending.splice(0, this.maxBatch);
     if (typeof this.allowSend === 'function' && !this.allowSend(batch)) {
-      this.pending = [];
-      this.log({ event: 'wake_deferred', reason: 'spend_cap' });
-      return { deferred: true, reason: 'spend_cap' };
+      this.pending = batch.concat(this.pending.filter((id) => !batch.includes(id)));
+      const hinted = typeof this.deferFor === 'function' ? Number(this.deferFor(batch)) : 60000;
+      const wait = Math.max(1000, Number.isFinite(hinted) ? hinted : 60000);
+      this.log({ event: 'wake_deferred', reason: 'spend_cap', waitMs: wait });
+      this.arm(wait);
+      return { deferred: true, reason: 'spend_cap', waitMs: wait };
     }
     const body = batch.length === 1 ? { msgId: batch[0] } : { msgIds: batch };
     let response;

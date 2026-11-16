@@ -101,6 +101,22 @@ class RateLimiter {
     this.daily.push(stamp);
   }
 
+  roomFor(count, now) {
+    const stamp = now == null ? Date.now() : now;
+    const needed = Math.max(0, Number(count) || 0);
+    this.global = prune(this.global, stamp, HOUR_MS);
+    this.daily = prune(this.daily, stamp, DAY_MS);
+    if (this.global.length + needed > this.limits.globalPerHour) {
+      const wait = this.global.length ? (HOUR_MS - (stamp - this.global[0])) : 1000;
+      return { ok: false, reason: 'rate_limited_global', waitMs: Math.max(1000, wait) };
+    }
+    if (this.daily.length + needed > this.limits.globalPerDay) {
+      const wait = this.daily.length ? (DAY_MS - (stamp - this.daily[0])) : 1000;
+      return { ok: false, reason: 'rate_limited_daily', waitMs: Math.max(1000, wait) };
+    }
+    return { ok: true };
+  }
+
   snapshot() {
     return {
       users: [...this.users.entries()],

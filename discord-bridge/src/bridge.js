@@ -117,6 +117,9 @@ class Bridge {
     this.extraDenied = new Set();
     this.strikes = {};
     this.rewakes = {};
+    this.rewakeQueued = new Set();
+    this.prepaid = new Set();
+    this.wakeDeferMs = 60000;
     this.hmacKey = options.hmacKey || '';
     this.token = options.token || '';
     this.tokenLockDir = options.tokenLockDir;
@@ -135,7 +138,9 @@ class Bridge {
     this.loadRewakes();
     if (this.wake) {
       this.wake.isStopped = () => this.killSwitchOn();
-      this.wake.allowSend = () => this.allowWake();
+      this.wake.allowSend = (batch) => this.allowWake(batch);
+      this.wake.deferFor = () => this.wakeDeferMs;
+      this.wake.onStarted = (batch) => this.chargeWake(batch);
     }
   }
 
@@ -150,16 +155,33 @@ class Bridge {
     return record;
   }
 
-  allowWake() {
-    const gate = this.rates.checkGlobal(this.now());
-    if (!gate.ok) {
-      this.tripKillSwitch(gate.reason);
-      this.stopAlerted = true;
-      return false;
+  allowWake(batch) {
+    const ids = Array.isArray(batch) ? batch.map(String) : [];
+    const rewakes = ids.filter((id) => !this.prepaid.has(id));
+    if (rewakes.length === 0) return true;
+    const room = this.rates.roomFor(rewakes.length, this.now());
+    if (room.ok) return true;
+    this.wakeDeferMs = room.waitMs || 60000;
+    return false;
+  }
+
+  chargeWake(batch) {
+    const ids = Array.isArray(batch) ? batch.map(String) : [];
+    let charged = 0;
+    for (const id of ids) {
+      if (this.prepaid.delete(id)) continue;
+      this.rates.commitGlobal(this.now());
+      const rec = this.rewakes[id] || { count: 0, nextAt: 0 };
+      rec.count += 1;
+      rec.nextAt = this.now() + rewakeBackoff(rec.count);
+      this.rewakes[id] = rec;
+      this.rewakeQueued.delete(id);
+      charged += 1;
     }
-    this.rates.commitGlobal(this.now());
-    this.saveRates();
-    return true;
+    if (charged > 0) {
+      this.saveRates();
+      this.saveRewakes();
+    }
   }
 
   botId() {
@@ -295,21 +317,19 @@ class Bridge {
   }
 
   async requestRewake(id) {
-    const rec = this.rewakes[id] || { count: 0, nextAt: 0 };
+    const key = String(id);
+    const rec = this.rewakes[key] || { count: 0, nextAt: 0 };
     if (rec.count >= MAX_REWAKES) return false;
     if (this.now() < Number(rec.nextAt || 0)) return false;
-    const gate = this.rates.checkGlobal(this.now());
-    if (!gate.ok) {
-      await this.tripKillSwitch(gate.reason);
-      this.stopAlerted = true;
-      return false;
+    if (this.rewakeQueued.has(key)) return false;
+    this.rewakeQueued.add(key);
+    try {
+      if (this.wake && typeof this.wake.notify === 'function') await this.wake.notify(key);
+      return true;
+    } catch (err) {
+      this.rewakeQueued.delete(key);
+      throw err;
     }
-    rec.count += 1;
-    rec.nextAt = this.now() + rewakeBackoff(rec.count);
-    this.rewakes[id] = rec;
-    this.saveRewakes();
-    if (this.wake && typeof this.wake.notify === 'function') await this.wake.notify(id);
-    return true;
   }
 
   noteOutsider(userId) {
@@ -434,6 +454,7 @@ class Bridge {
       this.saveRates();
       const reactions = this.config.policy.reactions || {};
       if (reactions.enabled) await this.react(message, reactions.ack);
+      this.prepaid.add(id);
       await this.wake.notify(id);
       return { accepted: true, id };
     } catch (err) {
@@ -525,7 +546,10 @@ class Bridge {
       || Object.keys(reply).some((key) => !OUTBOX_KEYS.has(key))) {
       return this.rejectReply(id, 'bad_shape');
     }
-    if (this.outboxSigRequired() && this.hmacKey && !verifyRecord(reply, this.hmacKey)) {
+    if (this.hmacKey && reply.sig && !verifyRecord(reply, this.hmacKey)) {
+      return this.rejectReply(id, 'bad_signature');
+    }
+    if (this.outboxSigRequired() && this.hmacKey && !reply.sig) {
       return this.rejectReply(id, 'bad_signature');
     }
 
@@ -650,12 +674,21 @@ class Bridge {
     }
   }
 
-  rewakeInbox() {
+  async rewakeInbox() {
     let ids = [];
-    try { ids = this.queue.list('inbox'); } catch (err) { return; }
+    try {
+      ids = this.queue.list('inbox');
+    } catch (err) {
+      this.log.warn({ event: 'rewake_scan_failed', ...errorFields(err) });
+      return;
+    }
     for (const id of ids) {
-      if (this.queue.exists('outbox', id)) continue;
-      this.requestRewake(id);
+      try {
+        if (this.queue.exists('outbox', id)) continue;
+        await this.requestRewake(id);
+      } catch (err) {
+        this.log.warn({ event: 'rewake_failed', messageId: id, ...errorFields(err) });
+      }
     }
   }
 
@@ -705,7 +738,9 @@ class Bridge {
     }
     this.queue.sweepTmp();
     this.queue.restoreSending();
-    this.rewakeInbox();
+    this.rewakeInbox().catch((err) => {
+      this.log.warn({ event: 'rewake_failed', ...errorFields(err) });
+    });
     this.scheduleTick();
   }
 

@@ -2,6 +2,7 @@
 
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
 const { EventEmitter } = require('events');
 const {
   Bridge,
@@ -11,6 +12,7 @@ const {
   loadConfig,
   signRecord,
   verifyRecord,
+  RateLimiter,
   ALLOWED_MENTIONS,
 } = require('../discord-bridge');
 const { Alerter, alertTemplate } = require('../discord-bridge/src/alert');
@@ -132,27 +134,92 @@ describe('round 2 fixes', () => {
     const rewakes = ctx.wakes.length - before;
     assert.ok(rewakes <= 2);
     assert.ok(rewakes >= 1);
-    ctx.bridge.rates.commitGlobal(clock);
-    ctx.bridge.rates.commitGlobal(clock);
-    ctx.bridge.saveRates();
-    const blocked = await ctx.bridge.requestRewake('8203');
-    assert.equal(blocked, false);
+  });
 
+  it('bills only successful re-wakes and keeps deferred ids', async () => {
+    const root = tempDir('phicc-r2-wake-');
+    dirs.push(root);
+    let clock = 1_700_000_000_000;
     const posts = [];
+    const timers = [];
+    const state = { mode: 'ok' };
     const wake = new WakeHandoff({
       url: 'https://hooks.example/wake',
       key: 'test-webhook-key',
       allowedHosts: ['hooks.example'],
-      maxBatch: 1,
-      fetchImpl: async () => {
-        posts.push(1);
+      maxBatch: 5,
+      maxPerHour: 100,
+      quietMs: 1500,
+      now: () => clock,
+      schedule: (fn, ms) => {
+        const timer = { fn, ms, cleared: false };
+        timers.push(timer);
+        return timer;
+      },
+      clear: (timer) => { if (timer) timer.cleared = true; },
+      fetchImpl: async ({ body }) => {
+        if (state.mode === 'fail') {
+          state.mode = 'ok';
+          return { status: 500, bodyText: 'down' };
+        }
+        posts.push(body);
         return { status: 200, bodyText: 'ok' };
       },
-      schedule: (fn) => { fn(); return { unref() {} }; },
-      allowSend: () => false,
     });
-    await wake.notify('8202');
-    assert.equal(posts.length, 0);
+    const bridge = new Bridge({
+      client: { user: { id: '444' } },
+      config: enabledConfig({
+        queue: { dir: `${root}/queue`, requireOutboxSig: true },
+        features: { enabled: true, killSwitchFile: `${root}/STOP` },
+        wake: { allowedHosts: ['hooks.example'] },
+      }),
+      queue: new FileQueue(`${root}/queue`),
+      log: memoryLogger(),
+      wake,
+      sleep: async () => {},
+      now: () => clock,
+      hmacKey: '',
+      lock: false,
+      rateLimits: new RateLimiter({
+        perUserPerMin: 10,
+        perChannelPerMin: 30,
+        globalPerHour: 10,
+        globalPerDay: 50,
+      }),
+      alerter: { send: async () => {} },
+    });
+    for (let n = 0; n < 10; n += 1) {
+      const accepted = await bridge.handleMessage(fakeMessage({ id: String(9000 + n) }));
+      assert.equal(accepted.accepted, true);
+    }
+    const sentIds = posts.flatMap((body) => body.msgIds || [body.msgId]);
+    assert.equal(sentIds.length, 10);
+    assert.equal(fs.existsSync(`${root}/STOP`), false);
+    assert.equal(bridge.rates.snapshot().global.length, 10);
+
+    await bridge.requestRewake('9000');
+    await bridge.requestRewake('9001');
+    await bridge.requestRewake('9002');
+    const beforeDefer = posts.length;
+    await timers.filter((timer) => !timer.cleared).at(-1).fn();
+    assert.equal(posts.length, beforeDefer);
+    assert.deepEqual(wake.pending.slice().sort(), ['9000', '9001', '9002']);
+
+    clock += 61 * 60 * 1000;
+    await timers.filter((timer) => !timer.cleared).at(-1).fn();
+    const retried = posts.slice(beforeDefer);
+    assert.equal(retried.length, 1);
+    assert.deepEqual(retried[0].msgIds.slice().sort(), ['9000', '9001', '9002']);
+    assert.equal(bridge.rates.snapshot().global.length, 3);
+    assert.equal(fs.existsSync(`${root}/STOP`), false);
+
+    state.mode = 'fail';
+    const billed = bridge.rates.snapshot().global.length;
+    await bridge.requestRewake('9003');
+    await timers.filter((timer) => !timer.cleared).at(-1).fn();
+    assert.equal(bridge.rates.snapshot().global.length, billed);
+    await timers.filter((timer) => !timer.cleared).at(-1).fn();
+    assert.equal(bridge.rates.snapshot().global.length, billed + 1);
   });
 
   it('dead-letters an unknown Discord message instead of waking forever', async () => {
@@ -256,6 +323,17 @@ describe('round 2 fixes', () => {
     });
     const mismatch = await ctx.bridge.flushOutbox();
     assert.equal(mismatch[0].reason, 'channel_mismatch');
+
+    await ctx.bridge.handleMessage(fakeMessage({ id: '8403' }));
+    ctx.queue.overwrite('outbox', '8403', {
+      replyTo: '8403',
+      channelId: '222',
+      text: 'tampered',
+      final: true,
+      sig: 'not-a-real-signature',
+    });
+    const forged = await ctx.bridge.flushOutbox();
+    assert.equal(forged[0].reason, 'bad_signature');
   });
 
   it('refuses to attach the Phicc adapter when the Phicc app id is unset', () => {

@@ -254,7 +254,7 @@ This repo does not contain the Comms Bot routine. Before go-live that routine ha
 
 P0 alerts are JSON files in `queue/alerts/`. If `ALERT_WEBHOOK_URL` and `ALERT_WEBHOOK_KEY` are set, the bridge also POSTs one fixed sentence to that URL. The URL must be HTTPS and its host must be in `wake.allowedHosts`. The sentence contains only the reason code, a message id, a channel id, and a timestamp. It does not contain Discord text.
 
-Re-wakes are limited to two per inbox item, with a backoff of one minute and then two minutes. Every webhook POST, including a re-wake, consumes the persisted hour and day caps. A deleted Discord message or channel is dead-lettered as `unreachable` and is not woken again.
+Re-wakes are limited to two successful posts per inbox item, with a backoff of one minute and then two minutes. Accepting a mention already spends its hour and day slot, so the first wake for that mention is not charged again. A later re-wake spends one more slot per id, and only after the webhook returns 200. A failed post is not billed. If a re-wake does not fit in the remaining cap, its ids stay queued and are tried again when a slot frees. A deleted Discord message or channel is dead-lettered as `unreachable` and is not woken again.
 
 The stronger setup is a separate Unix user for the bridge process. That user owns the Discord token, the webhook key, `QUEUE_HMAC_KEY`, `state/`, the STOP file, and the logs. `inbox/` can be group-readable and `outbox/` group-writable for the agent account. File mode alone does not separate agents that share one Unix user. Outbox checks above are what still limits a forged reply in that shared-user case.
 
