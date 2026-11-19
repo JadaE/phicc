@@ -14,7 +14,10 @@ const { signRecord, verifyRecord } = require('./sign');
 const { Alerter } = require('./alert');
 const { BridgeLock } = require('./lock');
 
-const ALLOWED_MENTIONS = Object.freeze({ parse: [] });
+function allowedMentions() {
+  return { parse: [] };
+}
+
 const FAILURE_NOTICE = "Couldn't answer that one. It's logged.";
 const TIMEOUT_NOTICE = 'Still working on this. If nothing else arrives, try again later.';
 const QUIET_REASONS = new Set([
@@ -425,7 +428,7 @@ class Bridge {
   }
 
   async replyWithRetry(message, content) {
-    const payload = { content: this.redactText(content), allowedMentions: ALLOWED_MENTIONS };
+    const payload = { content: this.redactText(content), allowedMentions: allowedMentions() };
     let attempts = 0;
     let rateWaits = 0;
     let last = null;
@@ -650,7 +653,7 @@ class Bridge {
       }
       try {
         if (message && typeof message.reply === 'function') {
-          await message.reply({ content: FAILURE_NOTICE, allowedMentions: ALLOWED_MENTIONS });
+          await message.reply({ content: FAILURE_NOTICE, allowedMentions: allowedMentions() });
         }
         if (message) await this.react(message, (this.config.policy.reactions || {}).fail);
       } catch (noticeErr) {
@@ -909,7 +912,7 @@ function attachToClient(client, options = {}) {
 }
 
 module.exports = {
-  ALLOWED_MENTIONS,
+  allowedMentions,
   FAILURE_NOTICE,
   TIMEOUT_NOTICE,
   Bridge,

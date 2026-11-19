@@ -7,7 +7,7 @@ const { WakeHandoff, postWebhook, parseHttpsWebhook } = require('./src/wake');
 const { chunkReply, TRUNCATION_NOTE, MAX_CHUNK_LEN, MAX_CHUNKS } = require('./src/chunk');
 const { redact, redactSecrets, hashId } = require('./src/redact');
 const { createLogger, errorFields } = require('./src/log');
-const { Bridge, attachToClient, ALLOWED_MENTIONS } = require('./src/bridge');
+const { Bridge, attachToClient, allowedMentions } = require('./src/bridge');
 const { signRecord, verifyRecord } = require('./src/sign');
 const { createBridgeClient, resolveIntentBits, REQUIRED_INTENTS } = require('./src/client');
 const { permissionInteger, PERMISSIONS, PRESETS } = require('./src/permissions');
@@ -39,7 +39,7 @@ module.exports = {
   verifyRecord,
   Bridge,
   attachToClient,
-  ALLOWED_MENTIONS,
+  allowedMentions,
   createBridgeClient,
   resolveIntentBits,
   REQUIRED_INTENTS,
