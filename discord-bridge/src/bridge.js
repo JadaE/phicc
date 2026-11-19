@@ -141,6 +141,7 @@ class Bridge {
       this.wake.allowSend = (batch) => this.allowWake(batch);
       this.wake.deferFor = () => this.wakeDeferMs;
       this.wake.onStarted = (batch) => this.chargeWake(batch);
+      this.wake.onDropped = (ids) => this.releaseWake(ids);
     }
   }
 
@@ -161,26 +162,60 @@ class Bridge {
     if (rewakes.length === 0) return true;
     const room = this.rates.roomFor(rewakes.length, this.now());
     if (room.ok) return true;
-    this.wakeDeferMs = room.waitMs || 60000;
-    return false;
+    const fresh = ids.filter((id) => this.prepaid.has(id));
+    if (fresh.length === 0) {
+      this.wakeDeferMs = room.waitMs || 60000;
+      return false;
+    }
+    let fit = 0;
+    for (let n = 1; n <= rewakes.length; n += 1) {
+      if (!this.rates.roomFor(n, this.now()).ok) break;
+      fit = n;
+    }
+    const send = [];
+    let taken = 0;
+    for (const id of ids) {
+      if (this.prepaid.has(id)) {
+        send.push(id);
+        continue;
+      }
+      if (taken < fit) {
+        send.push(id);
+        taken += 1;
+      }
+    }
+    const blocked = this.rates.roomFor(Math.max(rewakes.length - fit, 1), this.now());
+    this.wakeDeferMs = (blocked && blocked.waitMs) || room.waitMs || 60000;
+    return {
+      send,
+      defer: ids.filter((id) => !send.includes(id)),
+    };
   }
 
   chargeWake(batch) {
     const ids = Array.isArray(batch) ? batch.map(String) : [];
     let charged = 0;
     for (const id of ids) {
+      this.rewakeQueued.delete(id);
       if (this.prepaid.delete(id)) continue;
       this.rates.commitGlobal(this.now());
       const rec = this.rewakes[id] || { count: 0, nextAt: 0 };
       rec.count += 1;
       rec.nextAt = this.now() + rewakeBackoff(rec.count);
       this.rewakes[id] = rec;
-      this.rewakeQueued.delete(id);
       charged += 1;
     }
     if (charged > 0) {
       this.saveRates();
       this.saveRewakes();
+    }
+  }
+
+  releaseWake(ids) {
+    for (const id of ids || []) {
+      const key = String(id);
+      this.rewakeQueued.delete(key);
+      this.prepaid.delete(key);
     }
   }
 
@@ -227,6 +262,7 @@ class Bridge {
       this.stopAlerted = false;
       return false;
     }
+    if (this.wake && typeof this.wake.discardPending === 'function') this.wake.discardPending();
     if (!this.stopAlerted) {
       this.stopAlerted = true;
       this.alert({ level: 'P0', reason: 'kill_switch', detail: 'stop_file' });
@@ -318,13 +354,27 @@ class Bridge {
 
   async requestRewake(id) {
     const key = String(id);
+    if (this.killSwitchOn()) {
+      if (this.wake && typeof this.wake.discardPending === 'function') this.wake.discardPending([key]);
+      this.rewakeQueued.delete(key);
+      this.prepaid.delete(key);
+      return false;
+    }
     const rec = this.rewakes[key] || { count: 0, nextAt: 0 };
     if (rec.count >= MAX_REWAKES) return false;
     if (this.now() < Number(rec.nextAt || 0)) return false;
     if (this.rewakeQueued.has(key)) return false;
     this.rewakeQueued.add(key);
     try {
-      if (this.wake && typeof this.wake.notify === 'function') await this.wake.notify(key);
+      if (this.wake && typeof this.wake.notify === 'function') {
+        const result = await this.wake.notify(key);
+        if (result && result.stopped) {
+          this.rewakeQueued.delete(key);
+          this.prepaid.delete(key);
+          return false;
+        }
+        if (result && result.abandoned) return false;
+      }
       return true;
     } catch (err) {
       this.rewakeQueued.delete(key);
@@ -812,6 +862,7 @@ function attachToClient(client, options = {}) {
     quietMs: config.wake.coalesceQuietMs,
     maxBatch: config.wake.coalesceMaxBatch,
     maxPerHour: config.wake.maxPerHour,
+    maxFailedAttempts: config.wake && config.wake.maxFailedAttempts,
     log: (entry) => log.info(entry),
     fetchImpl: options.fetchImpl,
     schedule: options.schedule,
