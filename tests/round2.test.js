@@ -13,7 +13,7 @@ const {
   signRecord,
   verifyRecord,
   RateLimiter,
-  ALLOWED_MENTIONS,
+  allowedMentions,
 } = require('../discord-bridge');
 const { Alerter, alertTemplate } = require('../discord-bridge/src/alert');
 const { tempDir, rmrf, enabledConfig, fakeMessage, memoryLogger } = require('./helpers');
@@ -66,7 +66,7 @@ describe('round 2 fixes', () => {
       id: '8101',
       reply: async (payload) => {
         calls.push(payload);
-        assert.deepEqual(payload.allowedMentions, ALLOWED_MENTIONS);
+        assert.deepEqual(payload.allowedMentions, allowedMentions());
       },
     });
     await ctx.bridge.checkTimeouts();

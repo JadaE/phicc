@@ -4,7 +4,7 @@ const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { Bridge, FileQueue, ALLOWED_MENTIONS, TRUNCATION_NOTE } = require('../discord-bridge');
+const { Bridge, FileQueue, allowedMentions, TRUNCATION_NOTE } = require('../discord-bridge');
 const { tempDir, rmrf, enabledConfig, fakeMessage, memoryLogger } = require('./helpers');
 
 function setup(overrides = {}) {
@@ -124,7 +124,7 @@ describe('bridge message path', () => {
     assert.equal(results[0].done, true);
     assert.equal(calls.length, 3);
     for (const payload of calls) {
-      assert.deepEqual(payload.allowedMentions, ALLOWED_MENTIONS);
+      assert.deepEqual(payload.allowedMentions, allowedMentions());
       assert.ok(payload.content.length <= 1900);
     }
     assert.equal(calls.map((payload) => payload.content).join(''), 'y'.repeat(4000));
@@ -159,7 +159,7 @@ describe('bridge message path', () => {
     assert.equal(ctx.queue.read('dead', '5301').error, 'send_failed');
     assert.equal(ctx.queue.read('outbox', '5301'), null);
     assert.ok(calls.length >= 2);
-    for (const payload of calls) assert.deepEqual(payload.allowedMentions, ALLOWED_MENTIONS);
+    for (const payload of calls) assert.deepEqual(payload.allowedMentions, allowedMentions());
     assert.equal(calls.some((payload) => payload.content.includes("Couldn't answer")), true);
   });
 
@@ -227,7 +227,7 @@ describe('bridge message path', () => {
     await ctx.bridge.checkTimeouts();
     await ctx.bridge.checkTimeouts();
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].allowedMentions, ALLOWED_MENTIONS);
+    assert.deepEqual(calls[0].allowedMentions, allowedMentions());
     assert.match(calls[0].content, /Still working/);
     assert.equal(ctx.queue.read('inbox', '5501').timeoutNotified, true);
   });
@@ -258,7 +258,7 @@ describe('bridge message path', () => {
     const results = await ctx.bridge.flushOutbox();
     assert.equal(results[0].done, true);
     assert.equal(calls[0].content, 'thread reply');
-    assert.deepEqual(calls[0].allowedMentions, ALLOWED_MENTIONS);
+    assert.deepEqual(calls[0].allowedMentions, allowedMentions());
   });
 
   it('strips token-like text before queueing and stays quiet while the switch is on', async () => {
