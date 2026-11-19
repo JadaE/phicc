@@ -46,7 +46,8 @@
     "allowedHosts": ["YOUR_WEBHOOK_HOST"],
     "coalesceQuietMs": 1500,
     "coalesceMaxBatch": 5,
-    "maxPerHour": 10
+    "maxPerHour": 10,
+    "maxFailedAttempts": 8
   },
   "features": {
     "enabled": false,

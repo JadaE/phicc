@@ -46,6 +46,7 @@ function defaultConfig() {
       coalesceQuietMs: 1500,
       coalesceMaxBatch: 5,
       maxPerHour: 10,
+      maxFailedAttempts: 8,
     },
     features: {
       enabled: false,
@@ -131,6 +132,7 @@ const ENV_BINDINGS = [
   ['DBR_WAKE_QUIETMS', 'wake.coalesceQuietMs', 'int'],
   ['DBR_WAKE_MAXBATCH', 'wake.coalesceMaxBatch', 'int'],
   ['DBR_WAKE_MAXPERHOUR', 'wake.maxPerHour', 'int'],
+  ['DBR_WAKE_MAXFAILEDATTEMPTS', 'wake.maxFailedAttempts', 'int'],
 ];
 
 function applyEnv(config, env) {
@@ -169,8 +171,16 @@ function loadConfig(options = {}) {
 
   let config = defaultConfig();
   if (examplePath) config = merge(config, readJson(examplePath));
-  if (localPath) config = merge(config, readJson(localPath));
+  // Defaults and the example file cannot turn signature checks off.
+  config.queue.requireOutboxSig = true;
+  let localDisablesSig = false;
+  if (localPath) {
+    const local = readJson(localPath);
+    localDisablesSig = Boolean(local && local.queue && local.queue.requireOutboxSig === false);
+    config = merge(config, local);
+  }
   applyEnv(config, options.env);
+  if (!localDisablesSig) config.queue.requireOutboxSig = true;
   config.queue.dir = expandHome(config.queue.dir);
   config.features.killSwitchFile = expandHome(config.features.killSwitchFile);
   config.logging.dir = expandHome(config.logging.dir);
@@ -191,6 +201,7 @@ function clampConfig(config) {
   config.policy.retentionDays = clampLimit(config.policy.retentionDays, 1, 30, 7);
   const wakeCap = clampLimit(config.wake.maxPerHour, 1, limits.globalPerHour, limits.globalPerHour);
   config.wake.maxPerHour = Math.min(wakeCap, limits.globalPerHour);
+  config.wake.maxFailedAttempts = clampLimit(config.wake.maxFailedAttempts, 1, 30, 8);
   if (config.policy.usersOnly == null) config.policy.usersOnly = true;
   if (!Array.isArray(config.discord.deniedUserIds)) config.discord.deniedUserIds = [];
   if (!config.queue) config.queue = {};
@@ -272,13 +283,17 @@ function assertReady(config, options = {}) {
   if (!hosts.length || !hosts.includes(parsed.hostname)) throw refuse('WEBHOOK_HOST');
   const alertUrl = env.ALERT_WEBHOOK_URL || '';
   if (alertUrl) {
+    let alertHost = '';
     try {
       const alert = new URL(alertUrl);
       if (alert.protocol !== 'https:') throw refuse('ALERT_HTTPS');
+      alertHost = alert.hostname;
     } catch (err) {
-      if (err.code === 'ALERT_HTTPS') throw err;
+      if (err && err.code === 'ALERT_HTTPS') throw err;
       throw refuse('ALERT_HTTPS');
     }
+    const hosts = (config.wake && config.wake.allowedHosts) || [];
+    if (!alertHost || !hosts.includes(alertHost)) throw refuse('ALERT_HOST');
   }
 }
 

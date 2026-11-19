@@ -1,8 +1,16 @@
 'use strict';
 
 const https = require('https');
+const { redactValue } = require('./redact');
 
 const HOUR_MS = 60 * 60 * 1000;
+const DEFAULT_MAX_FAILED_ATTEMPTS = 8;
+
+function clampAttempts(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return DEFAULT_MAX_FAILED_ATTEMPTS;
+  return Math.min(30, Math.max(1, Math.floor(number)));
+}
 
 function webhookError(message, code) {
   const error = new Error(message);
@@ -102,6 +110,10 @@ class WakeHandoff {
     this.deferFor = options.deferFor;
     this.giveUpRetryMs = options.giveUpRetryMs == null ? 60000 : options.giveUpRetryMs;
     this.allowedHosts = options.allowedHosts || null;
+    this.maxFailedAttempts = options.maxFailedAttempts == null
+      ? DEFAULT_MAX_FAILED_ATTEMPTS
+      : clampAttempts(options.maxFailedAttempts);
+    this.failures = new Map();
   }
 
   configured() {
@@ -114,8 +126,11 @@ class WakeHandoff {
       return Promise.resolve({ skipped: true });
     }
     if (this.stopped || this.isStopped()) {
-      this.pending = [];
+      this.discardPending([msgId]);
       return Promise.resolve({ stopped: true });
+    }
+    if ((this.failures.get(String(msgId)) || 0) >= this.maxFailedAttempts) {
+      return Promise.resolve({ abandoned: true });
     }
     if (!this.pending.includes(msgId)) this.pending.push(msgId);
     if (this.pending.length >= this.maxBatch) {
@@ -152,9 +167,81 @@ class WakeHandoff {
     return this.inFlight;
   }
 
+  spendWait(ids) {
+    const hinted = typeof this.deferFor === 'function' ? Number(this.deferFor(ids)) : 60000;
+    return Math.max(1000, Number.isFinite(hinted) ? hinted : 60000);
+  }
+
+  deferSpend(ids) {
+    const keys = new Set(ids.map(String));
+    const rest = this.pending.filter((id) => !keys.has(String(id)));
+    this.pending = ids.concat(rest);
+    const wait = this.spendWait(ids);
+    this.log({ event: 'wake_deferred', reason: 'spend_cap', waitMs: wait });
+    this.clearTimer();
+    this.arm(wait);
+    return { deferred: true, reason: 'spend_cap', waitMs: wait };
+  }
+
+  chooseBatch(batch) {
+    if (typeof this.allowSend !== 'function') {
+      return { sending: batch, held: [] };
+    }
+    const decision = this.allowSend(batch);
+    if (!decision || decision === false) return { deferAll: true };
+    if (typeof decision !== 'object') return { sending: batch, held: [] };
+    const sendSet = new Set((decision.send || []).map(String));
+    const sending = batch.filter((id) => sendSet.has(String(id)));
+    const held = batch.filter((id) => !sendSet.has(String(id)));
+    if (sending.length === 0) return { deferAll: true };
+    return { sending, held };
+  }
+
+  holdBack(ids) {
+    if (!ids || ids.length === 0) return;
+    const keys = new Set(ids.map(String));
+    const rest = this.pending.filter((id) => !keys.has(String(id)));
+    this.pending = ids.concat(rest);
+  }
+
+  armAfterSend(held) {
+    if (this.pending.length === 0) return;
+    const heldKeys = new Set((held || []).map(String));
+    const onlyHeld = heldKeys.size > 0 && this.pending.every((id) => heldKeys.has(String(id)));
+    if (!onlyHeld) {
+      this.arm(this.quietMs);
+      return;
+    }
+    const wait = this.spendWait(this.pending);
+    this.log({ event: 'wake_deferred', reason: 'spend_cap', waitMs: wait });
+    this.clearTimer();
+    this.arm(wait);
+  }
+
+  discardPending(extra) {
+    this.clearTimer();
+    const seen = new Set();
+    const ids = [];
+    const push = (id) => {
+      if (id == null || id === '') return;
+      const key = String(id);
+      if (seen.has(key)) return;
+      seen.add(key);
+      ids.push(key);
+    };
+    for (const id of this.pending) push(id);
+    this.pending = [];
+    if (Array.isArray(extra)) {
+      for (const id of extra) push(id);
+    }
+    for (const id of ids) this.failures.delete(id);
+    if (ids.length > 0 && typeof this.onDropped === 'function') this.onDropped(ids);
+    return ids;
+  }
+
   async flushNow() {
     if (this.stopped || this.isStopped()) {
-      this.pending = [];
+      this.discardPending();
       return { stopped: true };
     }
     if (this.pending.length === 0) return { empty: true };
@@ -171,15 +258,12 @@ class WakeHandoff {
     }
 
     const batch = this.pending.splice(0, this.maxBatch);
-    if (typeof this.allowSend === 'function' && !this.allowSend(batch)) {
-      this.pending = batch.concat(this.pending.filter((id) => !batch.includes(id)));
-      const hinted = typeof this.deferFor === 'function' ? Number(this.deferFor(batch)) : 60000;
-      const wait = Math.max(1000, Number.isFinite(hinted) ? hinted : 60000);
-      this.log({ event: 'wake_deferred', reason: 'spend_cap', waitMs: wait });
-      this.arm(wait);
-      return { deferred: true, reason: 'spend_cap', waitMs: wait };
-    }
-    const body = batch.length === 1 ? { msgId: batch[0] } : { msgIds: batch };
+    const choice = this.chooseBatch(batch);
+    if (choice.deferAll) return this.deferSpend(batch);
+    const sending = choice.sending;
+    const held = choice.held || [];
+    this.holdBack(held);
+    const body = sending.length === 1 ? { msgId: sending[0] } : { msgIds: sending };
     let response;
     try {
       response = await this.fetchImpl({
@@ -189,22 +273,24 @@ class WakeHandoff {
         allowedHosts: this.allowedHosts,
       });
     } catch (err) {
-      return this.failTransient(batch, 0);
+      return this.failTransient(sending, 0);
     }
     const status = response && response.status;
     const bodyText = response && response.bodyText ? String(response.bodyText) : '';
     if (status === 200) {
+      for (const id of sending) this.failures.delete(String(id));
       this.successes.push(this.now());
       this.attempt = 0;
       this.rateLimitedOnce = false;
-      this.log({ event: 'wake_started', status: 200, count: batch.length });
-      if (typeof this.onStarted === 'function') this.onStarted(batch);
-      if (this.pending.length > 0) this.arm(this.quietMs);
-      return { started: true, count: batch.length };
+      this.log({ event: 'wake_started', status: 200, count: sending.length });
+      if (typeof this.onStarted === 'function') this.onStarted(sending);
+      this.armAfterSend(held);
+      return { started: true, count: sending.length };
     }
     const rateLimited = status === 429 || /rate limit/i.test(bodyText);
     if (rateLimited) {
-      this.pending = batch.concat(this.pending.filter((id) => !batch.includes(id)));
+      const keys = new Set(sending.map(String));
+      this.pending = sending.concat(this.pending.filter((id) => !keys.has(String(id))));
       const wait = Math.min(
         Math.max((response && response.retryAfterMs) || 60000, 1000),
         15 * 60 * 1000,
@@ -219,23 +305,56 @@ class WakeHandoff {
       this.log({ event: 'wake_rate_limited_stop', status: status || 0 });
       return { stopped: true };
     }
-    return this.failTransient(batch, status || 0);
+    return this.failTransient(sending, status || 0);
   }
 
   failTransient(batch, status) {
+    const keep = [];
+    const dropped = [];
+    for (const id of batch) {
+      const key = String(id);
+      const prev = this.failures.get(key) || 0;
+      if (prev >= this.maxFailedAttempts) {
+        dropped.push(key);
+        continue;
+      }
+      const count = prev + 1;
+      this.failures.set(key, count);
+      if (count >= this.maxFailedAttempts) {
+        dropped.push(key);
+        this.log(redactValue({
+          event: 'audit',
+          reason: 'wake_abandoned',
+          messageId: key,
+          status: Number(status) || 0,
+          attempts: count,
+        }, 0));
+      } else {
+        keep.push(id);
+      }
+    }
+    if (keep.length === 0) {
+      this.attempt = 0;
+      if (this.pending.length > 0) this.arm(this.quietMs);
+      return { abandoned: true, dropped, status: Number(status) || 0 };
+    }
+    const requeue = () => {
+      const keys = new Set(keep.map(String));
+      this.pending = keep.concat(this.pending.filter((id) => !keys.has(String(id))));
+    };
     this.attempt += 1;
     if (this.attempt <= 5) {
-      this.pending = batch.concat(this.pending.filter((id) => !batch.includes(id)));
+      requeue();
       const wait = Math.min(1000 * (2 ** (this.attempt - 1)), 60000);
       this.log({ event: 'wake_backoff', status, attempt: this.attempt, waitMs: wait });
       this.arm(wait);
-      return { backoff: true, waitMs: wait, attempt: this.attempt };
+      return { backoff: true, waitMs: wait, attempt: this.attempt, dropped };
     }
     this.attempt = 0;
-    this.pending = batch.concat(this.pending.filter((id) => !batch.includes(id)));
-    this.log({ event: 'wake_gave_up', status, count: batch.length, requeued: true });
+    requeue();
+    this.log({ event: 'wake_gave_up', status, count: keep.length, requeued: true });
     this.arm(this.giveUpRetryMs);
-    return { gaveUp: true, requeued: true };
+    return { gaveUp: true, requeued: true, dropped };
   }
 
   stop() {
