@@ -6,6 +6,9 @@
 # Usage: BRIDGE_DIR=/home/box/discord-bridge/comms-bot supervise.sh
 set -u
 D="${BRIDGE_DIR:-/home/box/discord-bridge/comms-bot}"
+# shellcheck disable=SC1091
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/lib/retired.sh"
+refuse_if_retired "$D"
 mkdir -p "$D/logs"
 MATCH="${BRIDGE_MATCH:-discord-bridge/standalone}"
 LOG="$D/logs/supervisor.log"

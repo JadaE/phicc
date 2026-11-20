@@ -5,6 +5,9 @@
 set -u
 D="${BRIDGE_DIR:-/home/box/discord-bridge/comms-bot}"
 SRC="${BRIDGE_SRC:-/workspace/phicc/discord-bridge}"
+# shellcheck disable=SC1091
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/lib/retired.sh"
+refuse_if_retired "$D"
 mkdir -p "$D/logs"
 if flock -n "$D/logs/.watchdog-loop.lock" true 2>/dev/null; then
   BRIDGE_DIR="$D" BRIDGE_SRC="$SRC" setsid nohup flock -n "$D/logs/.watchdog-loop.lock" \

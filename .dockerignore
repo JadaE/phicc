@@ -1,0 +1,13 @@
+.git
+node_modules
+.env
+.env*
+auth.json
+config.local.json
+reply.env
+queue
+logs
+keys
+tests
+*.md
+.gitleaks.toml

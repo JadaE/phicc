@@ -15,8 +15,15 @@ src/queue.js       atomic inbox writes, exclusive create, done and dead moves
 src/wake.js        coalesced webhook POST, backoff, 200 = run started
 src/client.js      discord.js client with intents 513 only
 src/bridge.js      wires policy, queue, wake, and replies
+src/envelope.js    signed-envelope checks (off unless configured)
+src/secrets.js     NAME or NAME_FILE secret loading
+post-reply.js      box helper that signs and posts envelopes
 standalone.js      process entry used by ../bridge.js
+../deploy/nas/     Dockerfile, compose, systemd, restart entrypoint
+../scripts/post-reply.js
 ```
+
+The envelope listener and `wake.carryRecord` stay off unless config turns them on. `PHICC_BRIDGE_ENABLED` is unchanged. Never grant Administrator. The outbox channel overwrite adds Manage Messages (8192) on that channel only.
 
 ## Forking
 

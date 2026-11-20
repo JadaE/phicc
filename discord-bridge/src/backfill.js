@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { errorFields } = require('./log');
+const { botMentioned } = require('./policy');
 
 const SNOWFLAKE = /^\d{17,20}$/;
 const PAGE = 50;
@@ -14,6 +15,20 @@ const MAX_RETRIES = 5;
 function newer(a, b) {
   if (!b) return true;
   return BigInt(a) > BigInt(b);
+}
+
+function snowflakeMs(id) {
+  try {
+    return Number((BigInt(id) >> 22n) + 1420070400000n);
+  } catch (err) {
+    return 0;
+  }
+}
+
+function messageTime(message) {
+  const created = Number(message && message.createdTimestamp);
+  if (Number.isFinite(created) && created > 0) return created;
+  return snowflakeMs(message && message.id);
 }
 
 /**
@@ -33,6 +48,7 @@ class Backfill {
     this.botId = options.botId || (() => null);
     this.rateCheck = options.rateCheck || null;
     this.killSwitchOn = options.killSwitchOn || (() => false);
+    this.observe = options.observe || null;
     this.now = options.now || Date.now;
     this.maxAgeMs = options.maxAgeMs || MAX_AGE_MS;
     this.retryMs = options.retryMs || RETRY_MS;
@@ -97,9 +113,7 @@ class Backfill {
   }
 
   mentionsBot(message) {
-    const botId = this.botId();
-    const users = message && message.mentions && message.mentions.users;
-    return Boolean(botId && users && typeof users.has === 'function' && users.has(botId));
+    return botMentioned(message, this.botId());
   }
 
   async fetchAfter(channel, after) {
@@ -158,8 +172,14 @@ class Backfill {
       }
       summary.fetched += messages.length;
       for (const message of messages) {
-        if (this.stopped) break;
-        const created = Number(message.createdTimestamp) || 0;
+        if (this.stopped || this.killSwitchOn()) {
+          summary.deferred = true;
+          if (this.killSwitchOn()) {
+            this.log.info({ event: 'backfill_deferred', channelId, reason: 'kill_switch' });
+          }
+          break;
+        }
+        const created = messageTime(message);
         const candidate = !(message.author && message.author.bot) && this.mentionsBot(message);
         if (candidate && created && this.now() - created > this.maxAgeMs) {
           summary.skippedOld += 1;
@@ -187,6 +207,13 @@ class Backfill {
             break;
           }
         }
+        if (typeof this.observe === 'function') {
+          try {
+            await this.observe(message);
+          } catch (err) {
+            this.log.warn({ event: 'backfill_observe_failed', channelId, ...errorFields(err) });
+          }
+        }
         if (newer(String(message.id), this.cursor[channelId])) this.cursor[channelId] = String(message.id);
       }
       this.save();
@@ -203,4 +230,4 @@ class Backfill {
   }
 }
 
-module.exports = { Backfill, MAX_AGE_MS };
+module.exports = { Backfill, MAX_AGE_MS, messageTime, snowflakeMs };

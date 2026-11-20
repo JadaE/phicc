@@ -110,6 +110,8 @@ class WakeHandoff {
     this.deferFor = options.deferFor;
     this.giveUpRetryMs = options.giveUpRetryMs == null ? 60000 : options.giveUpRetryMs;
     this.allowedHosts = options.allowedHosts || null;
+    this.carryRecord = options.carryRecord === true;
+    this.recordFor = options.recordFor;
     this.maxFailedAttempts = options.maxFailedAttempts == null
       ? DEFAULT_MAX_FAILED_ATTEMPTS
       : clampAttempts(options.maxFailedAttempts);
@@ -204,6 +206,22 @@ class WakeHandoff {
     this.pending = ids.concat(rest);
   }
 
+  buildBody(sending) {
+    if (this.carryRecord !== true) {
+      return sending.length === 1 ? { msgId: sending[0] } : { msgIds: sending };
+    }
+    const cap = this.maxBatch || 5;
+    const items = [];
+    for (const id of sending) {
+      if (items.length >= cap) break;
+      let raw = null;
+      if (typeof this.recordFor === 'function') raw = this.recordFor(id);
+      const item = sanitizeWakeItem(raw, id);
+      if (item) items.push(item);
+    }
+    return { v: 1, items };
+  }
+
   armAfterSend(held) {
     if (this.pending.length === 0) return;
     const heldKeys = new Set((held || []).map(String));
@@ -263,7 +281,7 @@ class WakeHandoff {
     const sending = choice.sending;
     const held = choice.held || [];
     this.holdBack(held);
-    const body = sending.length === 1 ? { msgId: sending[0] } : { msgIds: sending };
+    const body = this.buildBody(sending);
     let response;
     try {
       response = await this.fetchImpl({
@@ -363,9 +381,31 @@ class WakeHandoff {
   }
 }
 
+const WAKE_TEXT_CAP = 4000;
+
+function sanitizeWakeItem(raw, id) {
+  if (!raw || typeof raw !== 'object') return null;
+  const text = String(raw.text == null ? '' : raw.text)
+    .replace(/<@!?\d+>/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+    .slice(0, WAKE_TEXT_CAP);
+  return {
+    msgId: String(raw.msgId || id),
+    channelId: String(raw.channelId || ''),
+    text,
+    authorName: String(raw.authorName == null ? '' : raw.authorName).slice(0, 64),
+    authorHash: String(raw.authorHash || ''),
+    ts: Number(raw.ts) || 0,
+    trust: 'untrusted_discord_content',
+  };
+}
+
 module.exports = {
   WakeHandoff,
   postWebhook,
   parseHttpsWebhook,
+  sanitizeWakeItem,
+  WAKE_TEXT_CAP,
   HOUR_MS,
 };

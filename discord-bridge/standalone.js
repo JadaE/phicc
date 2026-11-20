@@ -3,6 +3,8 @@
 const { loadConfig, assertReady } = require('./src/config');
 const { createBridgeClient } = require('./src/client');
 const { attachToClient } = require('./src/bridge');
+const { secretValue } = require('./src/secrets');
+const { retiredMarker } = require('./src/retired');
 
 /**
  * Standalone process for a forked bridge. Does not register Phicc's !! commands.
@@ -10,6 +12,12 @@ const { attachToClient } = require('./src/bridge');
  * token env var is empty. The token is never written to the log.
  */
 function main(options = {}) {
+  const env = options.env || process.env;
+  if (retiredMarker(env)) {
+    console.error(JSON.stringify({ event: 'retired', action: 'refuse' }));
+    if (require.main === module) process.exitCode = 78;
+    return { started: false, reason: 'retired' };
+  }
   const loaded = options.config
     ? { config: options.config, localPath: options.localPath || null }
     : loadConfig(options);
@@ -26,7 +34,12 @@ function main(options = {}) {
     return { started: false, reason: 'config' };
   }
   const tokenEnv = (config.discord && config.discord.tokenEnv) || 'DISCORD_TOKEN';
-  const token = process.env[tokenEnv];
+  let token = '';
+  try {
+    token = secretValue(process.env, tokenEnv);
+  } catch (err) {
+    token = '';
+  }
   if (!token) {
     console.error(JSON.stringify({ event: 'missing_token_env', tokenEnv }));
     if (require.main === module) process.exitCode = 1;

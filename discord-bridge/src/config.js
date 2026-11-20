@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { clampLimit } = require('./policy');
+const { secretValue } = require('./secrets');
 
 const SNOWFLAKE = /^\d{17,20}$/;
 
@@ -56,7 +57,18 @@ function defaultConfig() {
       coalesceMaxBatch: 5,
       maxPerHour: 10,
       maxFailedAttempts: 8,
+      carryRecord: false,
     },
+    envelope: {
+      enabled: false,
+      outboxChannelId: '',
+      webhookIds: [],
+      hmacEnv: 'ENVELOPE_HMAC_KEY',
+      previousHmacEnv: 'ENVELOPE_HMAC_KEY_PREVIOUS',
+      rotationWindowMs: 600000,
+    },
+    backfill: { enabled: false },
+    liveness: { enabled: false, strict: false },
     features: {
       enabled: false,
       killSwitchFile: '~/discord-bridge/comms-bot/STOP',
@@ -142,6 +154,13 @@ const ENV_BINDINGS = [
   ['DBR_WAKE_MAXBATCH', 'wake.coalesceMaxBatch', 'int'],
   ['DBR_WAKE_MAXPERHOUR', 'wake.maxPerHour', 'int'],
   ['DBR_WAKE_MAXFAILEDATTEMPTS', 'wake.maxFailedAttempts', 'int'],
+  ['DBR_WAKE_CARRYRECORD', 'wake.carryRecord', 'bool'],
+  ['DBR_ENVELOPE_ENABLED', 'envelope.enabled', 'bool'],
+  ['DBR_ENVELOPE_OUTBOXCHANNELID', 'envelope.outboxChannelId', 'string'],
+  ['DBR_ENVELOPE_WEBHOOKIDS', 'envelope.webhookIds', 'csv'],
+  ['DBR_BACKFILL_ENABLED', 'backfill.enabled', 'bool'],
+  ['DBR_LIVENESS_ENABLED', 'liveness.enabled', 'bool'],
+  ['DBR_LIVENESS_STRICT', 'liveness.strict', 'bool'],
 ];
 
 function applyEnv(config, env) {
@@ -214,6 +233,17 @@ function clampConfig(config) {
   const wakeCap = clampLimit(config.wake.maxPerHour, 1, limits.globalPerHour, limits.globalPerHour);
   config.wake.maxPerHour = Math.min(wakeCap, limits.globalPerHour);
   config.wake.maxFailedAttempts = clampLimit(config.wake.maxFailedAttempts, 1, 30, 8);
+  if (!config.wake) config.wake = {};
+  config.wake.carryRecord = config.wake.carryRecord === true;
+  if (!config.envelope) config.envelope = {};
+  config.envelope.enabled = config.envelope.enabled === true;
+  config.envelope.rotationWindowMs = clampLimit(config.envelope.rotationWindowMs, 0, 600000, 600000);
+  if (!Array.isArray(config.envelope.webhookIds)) config.envelope.webhookIds = [];
+  if (!config.backfill) config.backfill = {};
+  config.backfill.enabled = config.backfill.enabled === true;
+  if (!config.liveness) config.liveness = {};
+  config.liveness.enabled = config.liveness.enabled === true;
+  config.liveness.strict = config.liveness.strict === true;
   if (config.policy.usersOnly == null) config.policy.usersOnly = true;
   if (!Array.isArray(config.discord.deniedUserIds)) config.discord.deniedUserIds = [];
   if (!config.queue) config.queue = {};
@@ -292,9 +322,9 @@ function assertReady(config, options = {}) {
   const guilds = new Set((discord.guildIds || []).map(String));
   if (roles.some((role) => guilds.has(String(role)))) throw refuse('ROLE_IS_GUILD');
   const env = options.env || process.env;
-  const url = env[config.wake.urlEnv] || '';
-  const key = env[config.wake.keyEnv] || '';
-  const hmac = env[config.wake.hmacEnv || 'QUEUE_HMAC_KEY'] || '';
+  const url = secretValue(env, config.wake.urlEnv);
+  const key = secretValue(env, config.wake.keyEnv);
+  const hmac = secretValue(env, config.wake.hmacEnv || 'QUEUE_HMAC_KEY');
   if (!url || !key) throw refuse('WEBHOOK_REQUIRED');
   if (!hmac || String(hmac).length < 16) throw refuse('HMAC_REQUIRED');
   let parsed;
@@ -306,7 +336,7 @@ function assertReady(config, options = {}) {
   if (parsed.protocol !== 'https:') throw refuse('WEBHOOK_HTTPS');
   const hosts = config.wake.allowedHosts || [];
   if (!hosts.length || !hosts.includes(parsed.hostname)) throw refuse('WEBHOOK_HOST');
-  const alertUrl = env.ALERT_WEBHOOK_URL || '';
+  const alertUrl = secretValue(env, 'ALERT_WEBHOOK_URL');
   if (alertUrl) {
     let alertHost = '';
     try {
@@ -319,6 +349,17 @@ function assertReady(config, options = {}) {
     }
     const hosts = (config.wake && config.wake.allowedHosts) || [];
     if (!alertHost || !hosts.includes(alertHost)) throw refuse('ALERT_HOST');
+  }
+  if (config.envelope && config.envelope.enabled === true) {
+    const envelope = config.envelope;
+    if (isPlaceholder(envelope.outboxChannelId) || (envelope.webhookIds || []).some(isPlaceholder)) {
+      throw refuse('PLACEHOLDER');
+    }
+    assertSnowflakeList([envelope.outboxChannelId], 'SNOWFLAKE');
+    assertSnowflakeList(envelope.webhookIds || [], 'SNOWFLAKE');
+    if (!envelope.webhookIds || envelope.webhookIds.length === 0) throw refuse('ENVELOPE_WEBHOOK');
+    const envelopeKey = secretValue(env, envelope.hmacEnv || 'ENVELOPE_HMAC_KEY');
+    if (!envelopeKey || String(envelopeKey).length < 16) throw refuse('ENVELOPE_HMAC_REQUIRED');
   }
 }
 

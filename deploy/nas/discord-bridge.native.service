@@ -1,0 +1,41 @@
+# Hardened systemd alternative. Install this file as discord-bridge.service
+# instead of the compose wrapper. Same unit name, so boot control stays one name.
+# dbridge is the system user from the NAS checklist (uid 10001, no login).
+[Unit]
+Description=Discord bridge NAS gateway (systemd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dbridge
+Group=dbridge
+WorkingDirectory=/srv/ssd1/discord-bridge
+ExecStart=/bin/sh -c 'export DISCORD_TOKEN_FILE="$$CREDENTIALS_DIRECTORY/discord_token"; export COMMS_WEBHOOK_URL_FILE="$$CREDENTIALS_DIRECTORY/comms_webhook_url"; export COMMS_WEBHOOK_KEY_FILE="$$CREDENTIALS_DIRECTORY/comms_webhook_key"; export QUEUE_HMAC_KEY_FILE="$$CREDENTIALS_DIRECTORY/queue_hmac"; export ENVELOPE_HMAC_KEY_FILE="$$CREDENTIALS_DIRECTORY/envelope_hmac"; exec /usr/bin/node /srv/ssd1/discord-bridge/app/deploy/nas/entrypoint.js'
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/srv/ssd1/discord-bridge
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LoadCredential=discord_token:/srv/ssd1/discord-bridge/secrets/discord_token
+LoadCredential=comms_webhook_url:/srv/ssd1/discord-bridge/secrets/comms_webhook_url
+LoadCredential=comms_webhook_key:/srv/ssd1/discord-bridge/secrets/comms_webhook_key
+LoadCredential=queue_hmac:/srv/ssd1/discord-bridge/secrets/queue_hmac
+LoadCredential=envelope_hmac:/srv/ssd1/discord-bridge/secrets/envelope_hmac
+Environment=NODE_ENV=production
+Environment=DBR_FEATURES_ENABLED=true
+Environment=DBR_QUEUE_DIR=/srv/ssd1/discord-bridge/queue
+Environment=DBR_LOGGING_DIR=/srv/ssd1/discord-bridge/logs
+Environment=DBR_STATE_DIR=/srv/ssd1/discord-bridge/state
+Environment=DBR_LIVENESS_ENABLED=true
+Environment=DBR_LIVENESS_STRICT=true
+Environment=DBR_WAKE_CARRYRECORD=true
+Environment=DBR_BACKFILL_ENABLED=true
+
+[Install]
+WantedBy=multi-user.target

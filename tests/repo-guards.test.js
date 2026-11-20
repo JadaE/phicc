@@ -25,11 +25,11 @@ function walk(dir, found) {
 describe('repo secret guards', () => {
   it('gitignores auth.json, config.local.json, and .env', () => {
     const ignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
-    for (const name of ['auth.json', 'config.local.json', '.env']) {
+    for (const name of ['auth.json', 'config.local.json', '.env', 'reply.env']) {
       assert.match(ignore, new RegExp(`^${name}$`, 'm'));
     }
     const tracked = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' });
-    for (const name of ['auth.json', 'config.local.json', '.env']) {
+    for (const name of ['auth.json', 'config.local.json', '.env', 'reply.env']) {
       assert.equal(tracked.split('\n').includes(name), false);
     }
   });

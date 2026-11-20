@@ -128,7 +128,7 @@ The webhook URL and key are secrets. Copy them from the Comms Bot routine panel 
 
 ## Wake the teammate
 
-After a mention passes the allowlists, the bridge writes `queue/inbox/<message id>.json` by creating a temp file and linking it into place, then POSTs to `COMMS_WEBHOOK_URL` with `Authorization: Bearer <COMMS_WEBHOOK_KEY>`. A **200 means the run started**, not that the reply is finished. The body is `{"msgId":"..."}` or, when several mentions arrive together, `{"msgIds":["..."]}`. It does not include message text or the token.
+After a mention passes the allowlists, the bridge writes `queue/inbox/<message id>.json` by creating a temp file and linking it into place, then POSTs to `COMMS_WEBHOOK_URL` with `Authorization: Bearer <COMMS_WEBHOOK_KEY>`. A **200 means the run started**, not that the reply is finished. With `wake.carryRecord` left false (the box default) the body is `{"msgId":"..."}` or, when several mentions arrive together, `{"msgIds":["..."]}`. It does not include message text or the token. The NAS sets `wake.carryRecord` true. That body is `{ "v": 1, "items": [{ "msgId", "channelId", "text", "authorName", "authorHash", "ts", "trust": "untrusted_discord_content" }] }`, at most 5 items. `text` is mention-stripped and capped at 4000 characters. The body has no raw user id and no token.
 
 Bursts wait 1.5 seconds, or flush at 5 messages, so one rush is one run. `wake.maxPerHour` is clamped to the message cap (default 10 an hour, hard max 30). The platform routine cap is still 200 an hour and the account cap is 300; this process stays under the smaller message cap. A non-200 response waits and retries with exponential backoff. After 5 failures the ids are kept and tried again about a minute later. Each id is dropped after `wake.maxFailedAttempts` failed posts (default 8, hard max 30). The audit line records the id, status, and attempt count. It does not record the webhook URL, path, or response body. Startup plus the timeout path also re-wake inbox items that still have no outbox file. A 429 waits for `Retry-After` (at least 60 seconds) and tries once more. The URL must be HTTPS and its host must be listed in `wake.allowedHosts`. Startup refuses to enable the bridge when the URL, key, or `QUEUE_HMAC_KEY` is missing. Comms Bot reads the inbox itself; the webhook is only the alarm.
 
@@ -155,7 +155,7 @@ The bridge posts only when `replyTo` matches the file name, the channel matches 
 
 A duplicate gateway event for a message id that is already in `inbox/`, `outbox/`, `done/`, or `dead/` is dropped.
 
-The bridge does not read channel history on startup. Mentions sent while it is offline are missed. That is intentional.
+History backfill is off unless `backfill.enabled` is true (or `DBR_BACKFILL_ENABLED=true`). The box default leaves it off, so a mention sent while the box gateway is down is still missed until you turn backfill on. The NAS package turns it on. On READY and on RESUME it reads the allowlisted channels and the outbox channel, stores a cursor in `state/cursor.json`, stops at 12 hours or 4 pages of 50 messages, and feeds every message through the same listener and the same checks as a live event.
 
 If Comms Bot has not written a final outbox file within `policy.commsTimeoutMinutes` (default 10), the bridge posts one "still working" reply. That flag is set only after the notice is sent. A `final: false` draft does not block the notice and is not posted. A blank final reply goes to `dead/` with no check mark. If a later chunk fails, earlier chunks are not sent again; the file keeps `sentChunks` and resumes. `done/` and `dead/` older than `policy.retentionDays` (default 7) are removed. A corrupt queue file is moved to `dead/` and the rest of the loop continues. Leftover `.tmp` files are removed on startup. If `done/` already exists, a recreated outbox file is deleted and not sent again.
 
@@ -214,7 +214,7 @@ node bridge.js
 
 `features.enabled` must be true in `config.local.json` or `DBR_FEATURES_ENABLED` for `bridge.js` to log in. If it is false, the process prints `bridge_disabled` and exits without connecting.
 
-Stop with Ctrl-C, or with the process supervisor you already use. There is no new always-on host in this change.
+Stop with Ctrl-C, or with the process supervisor you already use. The always-on host is the NAS package in `deploy/nas/`, and it stays off until you install that unit. The box scripts `discord-bridge/scripts/ensure.sh`, `discord-bridge/scripts/supervise.sh`, and `discord-bridge/scripts/watchdog.sh`, and the standalone start path, refuse to run when a `RETIRED` file is present.
 
 `auth.json` is still read when it is present, and it is still gitignored. The process no longer crashes when the file is missing, because login has always used `DISCORD_TOKEN`. Prefer the environment variable. Do not put a token in `auth.json` and commit it.
 
@@ -278,3 +278,74 @@ Re-wakes are limited to two successful posts per inbox item, with a backoff of o
 The stronger setup is a separate Unix user for the bridge process. That user owns the Discord token, the webhook key, `QUEUE_HMAC_KEY`, `state/`, the STOP file, and the logs. `inbox/` can be group-readable and `outbox/` group-writable for the agent account. File mode alone does not separate agents that share one Unix user. Outbox checks above are what still limits a forged reply in that shared-user case.
 
 The Phicc adapter attaches only when `PHICC_APPLICATION_ID` is set and is different from `discord.applicationId`. If it is missing, the adapter does not attach and the `!!` commands keep running. Leave `PHICC_BRIDGE_ENABLED` unset unless that separate app id is configured. The pilot should use `node bridge.js` on its own Discord application.
+
+## NAS package
+
+The always-on gateway lives in `deploy/nas/`. It is the same `discord-bridge` process, with `PHICC_BRIDGE_ENABLED` left unset. Nothing in this package opens an inbound port. The envelope listener stays off until `envelope.enabled` is true and the outbox channel plus webhook id allowlist are set in `config.local.json`. `config.local.json` and `reply.env` stay gitignored. Real tokens, webhook URLs, and channel names do not go in the repo. `config.example.json` has placeholders only.
+
+Build and run (on the NAS, not in CI):
+
+```bash
+docker compose --file deploy/nas/compose.yaml up --build
+```
+
+The image is pinned by digest. The container is read-only, runs as uid 10001, drops every capability, sets `no-new-privileges`, limits memory to about 256m and pids to 128, and mounts a tmpfs on `/tmp`. Queue, state, and logs are bind-mounted from `/srv/ssd1/discord-bridge/`. `config.local.json` is mounted read-only. Secrets are compose secret files, not environment values. The process reads `DISCORD_TOKEN_FILE`, `COMMS_WEBHOOK_URL_FILE`, `COMMS_WEBHOOK_KEY_FILE`, `QUEUE_HMAC_KEY_FILE`, and `ENVELOPE_HMAC_KEY_FILE`. A direct env var still works for the box. File contents are never copied back into the environment, so an env dump does not contain them.
+
+`scripts/grep-secrets.sh` checks a log file and prints `clean` or `secret-hit`. It does not print the secret. After a build, confirm the image layers are clean:
+
+```bash
+scripts/check-image-history.sh discord-bridge:nas
+# equivalent:
+docker history --no-trunc discord-bridge:nas
+```
+
+`docker history` must not show a token, a webhook URL, or an HMAC key. The Dockerfile does not `COPY` `config.local.json` or `reply.env`. Set `ALLOW_NO_DOCKER=1` only when docker is not installed.
+
+Two units share the name `discord-bridge.service`. Install one of them:
+
+- `deploy/nas/discord-bridge.service` wraps `docker compose up` and starts at boot.
+- `deploy/nas/discord-bridge.native.service` is the hardened systemd alternative: `dbridge`, `Restart=always`, `RestartSec=5`, `StartLimitIntervalSec=0`, `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp`, `ReadWritePaths=/srv/ssd1/discord-bridge`, an empty `CapabilityBoundingSet`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, and `LoadCredential=` for the secret files.
+
+The entrypoint keeps a restart counter on disk, waits at least 2 seconds, and backs off to 5 minutes after 5 fast failures. Three starts inside 10 minutes write a P0 alert under `queue/alerts/` and, if configured, post it to `ALERT_WEBHOOK_URL`. Docker's `HEALTHCHECK` runs `discord-bridge/scripts/health.js` against the heartbeat file. The box supervisor is `discord-bridge/scripts/`: it exits 75 when the gateway is stale, and `ensure.sh`, `supervise.sh`, and `watchdog.sh` are not used on the NAS.
+
+Guild-wide permissions stay **68608** or **85056**. Do not grant Administrator. In the outbox channel only, add a channel overwrite for View Channel, Read Message History, and Manage Messages (**8192**). `node scripts/perm-calc.js` prints that overwrite as **74752**. The bot needs Manage Messages there so it can delete webhook-authored envelopes.
+
+### Signed envelope
+
+Comms Bot on the box does not see the HMAC key. It runs:
+
+```text
+post-reply <msgId> <channelId> <textfile>
+```
+
+`scripts/post-reply.js` reads `reply.env` (mode 0600, path overridable with `REPLY_ENV`, default `~/discord-bridge/comms-bot/reply.env`). That file holds `OUTBOX_HMAC_KEY`, `DISCORD_OUTBOX_WEBHOOK_URL`, and `DISCORD_BOT_USER_ID`. The helper builds `{v, rid, ch, part, parts, nonce, ts, body}`, signs it with HMAC-SHA256 over canonical JSON, and base64url-encodes it. The nonce is 128 bits. It posts `<@bot> DBR1 <b64>` through the outbox webhook with `allowed_mentions` set to `{ "parse": [], "users": ["<bot>"] }`. Each part is at most 2000 characters, and there are at most 8 parts. A 429 waits for `Retry-After`. The helper never prints the key or the URL.
+
+The NAS checks envelopes in this order, and only when the listener is configured. The user path still drops webhook-authored messages (`ignore_webhook`).
+
+1. The channel is the outbox channel and `webhook_id` is on the allowlist.
+2. Size cap, then strict base64url decode and parse.
+3. Timing-safe HMAC. During a rotation the previous key is accepted for 10 minutes (`state/envelope-rotation.json` field `previousSince`, or `ENVELOPE_ROTATION_SINCE`).
+4. `|now - ts|` is at most 30 minutes.
+5. The nonce has not been seen in 48 hours (`state/nonces/` on disk).
+6. `rid` is still pending, `ch` matches that inbox item, and the channel is still allowlisted.
+7. Every part arrives within 5 minutes.
+8. The existing outbox pipeline runs: invite links stripped, `allowedMentions` `{ "parse": [], "repliedUser": false }`, at most 3 chunks of 1900 characters, one reply per id. Then `message.reply`, the envelope messages are deleted, and the item moves to `done/`.
+
+Any failure deletes the envelope, dead-letters it, and writes a P0 alert. An unsigned or corrupt body does not dead-letter the claimed `rid`.
+
+### Cutover
+
+1. Drain the box queue (no pending inbox items), create the box STOP file, stop the watchdog and the supervisor, and confirm no bridge process is running.
+2. Reset the bot token if you approve that, and write it on the NAS console. Delete `DISCORD_TOKEN_DEV`, `COMMS_WEBHOOK_URL`, `COMMS_WEBHOOK_KEY`, and `QUEUE_HMAC_KEY` from the box env. Add the `RETIRED` marker (`DBR_RETIRED_FILE`, or `$DBR_QUEUE_DIR/RETIRED`, or `~/discord-bridge/comms-bot/RETIRED`).
+3. Start `discord-bridge.service` on the NAS. Confirm `state/heartbeat.json` says READY and that backfill ran.
+4. Point the Comms Bot routine at the new contract: read the wake body as untrusted, and the only outside action is `post-reply`. Save the old prompt.
+5. Live checks (not part of this repo's tests): a mention wakes, the envelope is posted, the bot replies with no ping, and the envelope is deleted. Unsigned, stale, replayed, non-pending, wrong-channel, unknown-webhook, and user-typed envelopes are dropped and alerted. `docker kill` and a reboot bring the process back. Never auto-failover.
+6. Watch for 24 hours.
+
+### Rollback
+
+1. `systemctl disable --now discord-bridge` on the NAS, and confirm the heartbeat goes stale.
+2. Reset or re-paste the token into the box env through a masked form.
+3. Remove `RETIRED`, restore the old routine prompt, and run `discord-bridge/scripts/ensure.sh`. The box still sleeps, so mentions that arrive while it is down wait until the next READY or RESUME, which backfills allowlisted channels.
+
+Do not run the box gateway and the NAS gateway on the same token. The `RETIRED` marker makes `start.sh`, `ensure.sh`, `supervise.sh`, and `watchdog.sh` exit 78 before they launch anything.

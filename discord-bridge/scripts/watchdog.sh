@@ -7,6 +7,9 @@
 set -u
 D="${BRIDGE_DIR:-/home/box/discord-bridge/comms-bot}"
 SRC="${BRIDGE_SRC:-/workspace/phicc/discord-bridge}"
+# shellcheck disable=SC1091
+. "$(CDPATH= cd -- "$(dirname "$0")" && pwd)/lib/retired.sh"
+refuse_if_retired "$D"
 [ -f "$D/STOP" ] && exit 0
 mkdir -p "$D/logs"
 LOG="$D/logs/watchdog.log"

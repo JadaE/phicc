@@ -1,0 +1,19 @@
+# Docker Compose wrapper. Install this file as discord-bridge.service
+# (the same unit name as the native alternative). Only one of the two is installed.
+[Unit]
+Description=Discord bridge NAS gateway (docker compose)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/ssd1/discord-bridge
+ExecStart=/usr/bin/docker compose --file /srv/ssd1/discord-bridge/app/deploy/nas/compose.yaml up --remove-orphans
+ExecStop=/usr/bin/docker compose --file /srv/ssd1/discord-bridge/app/deploy/nas/compose.yaml down
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
