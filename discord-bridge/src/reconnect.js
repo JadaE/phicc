@@ -1,5 +1,7 @@
 'use strict';
 
+const { errorFields } = require('./log');
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const IDENTIFY_WARN_AT = 50;
 
@@ -37,10 +39,24 @@ function trackGateway(client, log, state) {
       });
     }
   };
+  const code = (value) => (value && value.code != null ? Number(value.code) || String(value.code) : undefined);
   client.on('ready', onReady);
-  client.on('shardResume', () => log.info({ event: 'gateway_resume' }));
-  client.on('shardDisconnect', () => log.info({ event: 'gateway_disconnect' }));
-  client.on('error', () => log.warn({ event: 'gateway_error' }));
+  client.on('shardReady', (shardId) => log.info({ event: 'gateway_shard_ready', shardId }));
+  client.on('shardResume', (shardId, replayed) => log.info({
+    event: 'gateway_resume',
+    shardId,
+    replayed: Number.isFinite(replayed) ? replayed : undefined,
+  }));
+  client.on('shardDisconnect', (closeEvent, shardId) => log.warn({
+    event: 'gateway_disconnect',
+    shardId,
+    closeCode: code(closeEvent),
+  }));
+  client.on('shardReconnecting', (shardId) => log.info({ event: 'gateway_reconnecting', shardId }));
+  client.on('shardError', (err, shardId) => log.warn({ event: 'gateway_shard_error', shardId, ...errorFields(err) }));
+  // 'warn' strings are not logged: only that one happened. Never attach to 'debug'.
+  client.on('warn', () => log.warn({ event: 'gateway_warn' }));
+  client.on('error', (err) => log.warn({ event: 'gateway_error', ...errorFields(err) }));
   return bucket;
 }
 

@@ -218,6 +218,23 @@ Stop with Ctrl-C, or with the process supervisor you already use. There is no ne
 
 `auth.json` is still read when it is present, and it is still gitignored. The process no longer crashes when the file is missing, because login has always used `DISCORD_TOKEN`. Prefer the environment variable. Do not put a token in `auth.json` and commit it.
 
+## Staying connected (standalone pilot)
+
+A running process with an open socket is not proof the bridge is connected. On a sandbox box every outbound socket goes to a local egress proxy, so it can look open after the real Discord connection is gone. The box can also be paused for hours when no agent is working, and nothing runs while it is paused.
+
+- The bridge logs every gateway lifecycle event: `gateway_ready`, `gateway_shard_ready`, `gateway_resume` (with `replayed`), `gateway_disconnect` (with `closeCode`), `gateway_reconnecting`, `gateway_shard_error`, `gateway_invalidated` (standalone only), `gateway_warn`, `gateway_error`. Message text and warning strings are never logged, and nothing attaches to `debug`.
+- Every 15 s it writes `logs/heartbeat.json` (mode 600): status, `ws.ping`, when the last gateway packet arrived (heartbeat ACKs count), last ready/resume. No message content.
+- It exits with code 75 when: no gateway packet for 150 s (a zombie connection; ACKs normally come every ~41 s), the shard is not READY for 180 s, the session is invalidated, or a 15 s timer fires more than 90 s late (the box was paused or the event loop was blocked).
+- After every READY or RESUME it backfills: for each allowlisted channel it fetches messages after the newest id it has seen (`queue/state/cursor.json`) and passes them to the normal handler, so `requireMention`, allowlists, rate limits, the kill switch and the duplicate check all apply. Mentions older than 12 h are skipped. It checks the rate limits before each one and stops (retrying later) rather than tripping the hourly or daily kill switch. The first run only records the newest id and replays nothing.
+
+Scripts in `discord-bridge/scripts/` (pilot dir via `BRIDGE_DIR`, default `/home/box/discord-bridge/comms-bot`):
+
+- `supervise.sh` runs `start.sh` and starts it again when it exits: 2 s after an exit 75, otherwise with backoff up to 5 min. One per pilot dir (flock). It waits while `STOP` exists or a bridge started by hand is running.
+- `watchdog.sh` (run every 60 s) starts the supervisor if it is not running, and kills a bridge whose heartbeat file is older than 120 s or whose last gateway packet is older than 180 s. It does nothing while `STOP` exists.
+- `ensure.sh` starts the 60 s watchdog loop if it is not running. It is idempotent. The box has no init system that starts it at boot, so run it at the start of any agent turn or routine that relies on the bridge.
+
+Recovery time: a zombie or stuck connection is replaced within about 2.5 to 3 minutes; after the box wakes from a pause, within about 15 s. Mentions sent while the box was paused are not seen live; backfill picks them up after the next connect. For replies while the box is asleep the bridge has to run on an always-on host.
+
 ## Rollback
 
 1. `touch` the STOP file. The bridge goes quiet on the next event. `!!` commands are unaffected.

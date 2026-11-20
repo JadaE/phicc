@@ -10,6 +10,8 @@ const { redactSecrets } = require('./redact');
 const { createLogger, errorFields } = require('./log');
 const { loadConfig, assertReady, expandHome, clampConfig, clampTyping } = require('./config');
 const { trackGateway } = require('./reconnect');
+const { GatewayMonitor } = require('./liveness');
+const { Backfill } = require('./backfill');
 const { signRecord, verifyRecord } = require('./sign');
 const { Alerter } = require('./alert');
 const { BridgeLock } = require('./lock');
@@ -1010,18 +1012,66 @@ function attachToClient(client, options = {}) {
     alerter: options.alerter,
   });
   const prefixes = options.ignorePrefixes || config.policy.ignorePrefixes || ['!!'];
-  const listener = (msg) => {
+  const handle = (msg) => {
     if (msg && typeof msg.content === 'string' && prefixes.some((prefix) => prefix && msg.content.startsWith(prefix))) {
       return undefined;
     }
     return bridge.handleMessage(msg);
   };
+  let backfill = null;
+  if (options.backfill && config.features.enabled) {
+    backfill = new Backfill({
+      client,
+      log,
+      handle,
+      channelIds: config.discord.channelIds,
+      cursorFile: path.join(queue.root, 'state', 'cursor.json'),
+      botId: () => bridge.botId(),
+      rateCheck: (msg) => bridge.rates.check(msg.author && msg.author.id, msg.channelId, bridge.now()),
+      killSwitchOn: () => bridge.killSwitchOn(),
+      now: options.now,
+      schedule: options.backfillSchedule,
+    });
+  }
+  const listener = (msg) => {
+    if (backfill) backfill.note(msg);
+    return handle(msg);
+  };
   client.on('messageCreate', listener);
   bridge.listener = listener;
+  bridge.backfill = backfill;
   trackGateway(client, log);
+  const onConnected = () => {
+    if (backfill) {
+      backfill.trigger('connected').catch((err) => log.warn({ event: 'backfill_failed', ...errorFields(err) }));
+    }
+  };
+  client.on('ready', onConnected);
+  client.on('shardResume', onConnected);
+  let monitor = null;
+  if (options.liveness) {
+    monitor = new GatewayMonitor({
+      client,
+      log,
+      heartbeatFile: options.liveness.heartbeatFile || path.join(expandHome(config.logging.dir), 'heartbeat.json'),
+      onStale: options.liveness.onStale,
+      now: options.now,
+      intervalMs: options.liveness.intervalMs,
+      staleMs: options.liveness.staleMs,
+      notReadyMs: options.liveness.notReadyMs,
+      sleepGapMs: options.liveness.sleepGapMs,
+      setInterval: options.liveness.setInterval,
+      clearInterval: options.liveness.clearInterval,
+    }).start();
+  }
+  bridge.monitor = monitor;
   if (options.autostart !== false && config.features.enabled) bridge.start();
   bridge.detach = () => {
     client.removeListener('messageCreate', listener);
+    client.removeListener('ready', onConnected);
+    client.removeListener('shardResume', onConnected);
+    if (backfill) backfill.stop();
+    if (monitor) monitor.stop();
     bridge.stop();
   };
   return bridge;

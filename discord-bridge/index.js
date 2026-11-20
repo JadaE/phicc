@@ -12,6 +12,8 @@ const { signRecord, verifyRecord } = require('./src/sign');
 const { createBridgeClient, resolveIntentBits, REQUIRED_INTENTS } = require('./src/client');
 const { permissionInteger, PERMISSIONS, PRESETS } = require('./src/permissions');
 const { nextBackoffMs, noteIdentify, trackGateway } = require('./src/reconnect');
+const { GatewayMonitor, checkHeartbeatFile } = require('./src/liveness');
+const { Backfill } = require('./src/backfill');
 
 module.exports = {
   loadConfig,
@@ -49,4 +51,7 @@ module.exports = {
   nextBackoffMs,
   noteIdentify,
   trackGateway,
+  GatewayMonitor,
+  checkHeartbeatFile,
+  Backfill,
 };
