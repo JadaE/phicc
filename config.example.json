@@ -49,8 +49,18 @@
     "coalesceQuietMs": 1500,
     "coalesceMaxBatch": 5,
     "maxPerHour": 10,
-    "maxFailedAttempts": 8
+    "maxFailedAttempts": 8,
+    "carryRecord": false
   },
+  "envelope": {
+    "enabled": false,
+    "outboxChannelId": "YOUR_OUTBOX_CHANNEL_ID",
+    "webhookIds": ["YOUR_WEBHOOK_ID"],
+    "hmacEnv": "ENVELOPE_HMAC_KEY",
+    "previousHmacEnv": "ENVELOPE_HMAC_KEY_PREVIOUS"
+  },
+  "backfill": { "enabled": false },
+  "liveness": { "enabled": false, "strict": false },
   "features": {
     "enabled": false,
     "killSwitchFile": "~/discord-bridge/comms-bot/STOP"

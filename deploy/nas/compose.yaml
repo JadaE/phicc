@@ -1,0 +1,73 @@
+# NAS gateway. No ports: the process only dials out.
+# One data directory on SSD1 (mode 700, uid 10001) plus a read-only config file.
+services:
+  discord-bridge:
+    build:
+      context: ../..
+      dockerfile: deploy/nas/Dockerfile
+    image: discord-bridge:nas
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+    volumes:
+      - type: bind
+        source: /srv/ssd1/discord-bridge/queue
+        target: /srv/ssd1/discord-bridge/queue
+      - type: bind
+        source: /srv/ssd1/discord-bridge/state
+        target: /srv/ssd1/discord-bridge/state
+      - type: bind
+        source: /srv/ssd1/discord-bridge/logs
+        target: /srv/ssd1/discord-bridge/logs
+      - type: bind
+        source: /srv/ssd1/discord-bridge/config.local.json
+        target: /app/config.local.json
+        read_only: true
+    environment:
+      DBR_FEATURES_ENABLED: "true"
+      DBR_QUEUE_DIR: /srv/ssd1/discord-bridge/queue
+      DBR_LOGGING_DIR: /srv/ssd1/discord-bridge/logs
+      DBR_STATE_DIR: /srv/ssd1/discord-bridge/state
+      DBR_LIVENESS_ENABLED: "true"
+      DBR_LIVENESS_STRICT: "true"
+      DBR_WAKE_CARRYRECORD: "true"
+      DBR_BACKFILL_ENABLED: "true"
+      DISCORD_TOKEN_FILE: /run/secrets/discord_token
+      COMMS_WEBHOOK_URL_FILE: /run/secrets/comms_webhook_url
+      COMMS_WEBHOOK_KEY_FILE: /run/secrets/comms_webhook_key
+      QUEUE_HMAC_KEY_FILE: /run/secrets/queue_hmac
+      ENVELOPE_HMAC_KEY_FILE: /run/secrets/envelope_hmac
+      ALERT_WEBHOOK_URL_FILE: /run/secrets/alert_webhook_url
+      ALERT_WEBHOOK_KEY_FILE: /run/secrets/alert_webhook_key
+    secrets:
+      - discord_token
+      - comms_webhook_url
+      - comms_webhook_key
+      - queue_hmac
+      - envelope_hmac
+      - alert_webhook_url
+      - alert_webhook_key
+
+secrets:
+  discord_token:
+    file: /srv/ssd1/discord-bridge/secrets/discord_token
+  comms_webhook_url:
+    file: /srv/ssd1/discord-bridge/secrets/comms_webhook_url
+  comms_webhook_key:
+    file: /srv/ssd1/discord-bridge/secrets/comms_webhook_key
+  queue_hmac:
+    file: /srv/ssd1/discord-bridge/secrets/queue_hmac
+  envelope_hmac:
+    file: /srv/ssd1/discord-bridge/secrets/envelope_hmac
+  alert_webhook_url:
+    file: /srv/ssd1/discord-bridge/secrets/alert_webhook_url
+  alert_webhook_key:
+    file: /srv/ssd1/discord-bridge/secrets/alert_webhook_key

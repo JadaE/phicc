@@ -9,9 +9,30 @@ const { redact, redactSecrets, hashId } = require('./src/redact');
 const { createLogger, errorFields } = require('./src/log');
 const { Bridge, attachToClient, allowedMentions } = require('./src/bridge');
 const { signRecord, verifyRecord } = require('./src/sign');
+const { secretValue, resolveSecrets } = require('./src/secrets');
+const { sanitizeWakeItem } = require('./src/wake');
+const {
+  EnvelopeIngress,
+  envelopeConfigured,
+  selectKeys,
+  verifyEnvelope,
+  NonceStore,
+  PartStore,
+} = require('./src/envelope');
+const {
+  planStart,
+  noteExit,
+  delayMs,
+  superviseOnce,
+  MIN_DELAY_MS,
+  MAX_DELAY_MS,
+} = require('./src/restart');
+const { postReply, splitReply, main: postReplyMain } = require('./post-reply');
 const { createBridgeClient, resolveIntentBits, REQUIRED_INTENTS } = require('./src/client');
 const { permissionInteger, PERMISSIONS, PRESETS } = require('./src/permissions');
 const { nextBackoffMs, noteIdentify, trackGateway } = require('./src/reconnect');
+const { GatewayMonitor, checkHeartbeatFile } = require('./src/liveness');
+const { Backfill } = require('./src/backfill');
 
 module.exports = {
   loadConfig,
@@ -26,6 +47,24 @@ module.exports = {
   WakeHandoff,
   postWebhook,
   parseHttpsWebhook,
+  sanitizeWakeItem,
+  secretValue,
+  resolveSecrets,
+  EnvelopeIngress,
+  envelopeConfigured,
+  selectKeys,
+  verifyEnvelope,
+  NonceStore,
+  PartStore,
+  planStart,
+  noteExit,
+  delayMs,
+  superviseOnce,
+  MIN_DELAY_MS,
+  MAX_DELAY_MS,
+  postReply,
+  splitReply,
+  postReplyMain,
   chunkReply,
   TRUNCATION_NOTE,
   MAX_CHUNK_LEN,
@@ -49,4 +88,7 @@ module.exports = {
   nextBackoffMs,
   noteIdentify,
   trackGateway,
+  GatewayMonitor,
+  checkHeartbeatFile,
+  Backfill,
 };

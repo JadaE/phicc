@@ -10,9 +10,13 @@ const { redactSecrets } = require('./redact');
 const { createLogger, errorFields } = require('./log');
 const { loadConfig, assertReady, expandHome, clampConfig, clampTyping } = require('./config');
 const { trackGateway } = require('./reconnect');
+const { GatewayMonitor } = require('./liveness');
+const { Backfill } = require('./backfill');
 const { signRecord, verifyRecord } = require('./sign');
 const { Alerter } = require('./alert');
 const { BridgeLock } = require('./lock');
+const { secretValue } = require('./secrets');
+const { EnvelopeIngress, envelopeConfigured } = require('./envelope');
 
 // New object on every call. discord.js 13.6 uses this as a prototype and then
 // assigns parse, which throws if the object is frozen. repliedUser false tells
@@ -143,13 +147,67 @@ class Bridge {
     this.loadRates();
     this.loadSecurity();
     this.loadRewakes();
+    this.stateDirOverride = options.stateDir || '';
     if (this.wake) {
       this.wake.isStopped = () => this.killSwitchOn();
       this.wake.allowSend = (batch) => this.allowWake(batch);
       this.wake.deferFor = () => this.wakeDeferMs;
       this.wake.onStarted = (batch) => this.chargeWake(batch);
       this.wake.onDropped = (ids) => this.releaseWake(ids);
+      if (this.config.wake && this.config.wake.carryRecord === true) {
+        this.wake.carryRecord = true;
+        this.wake.recordFor = (id) => this.wakeItemFor(id);
+      }
     }
+    this.envelope = null;
+  }
+
+  stateDir() {
+    if (this.stateDirOverride) return this.stateDirOverride;
+    return path.join(this.queue.root, 'state');
+  }
+
+  wakeItemFor(id) {
+    let record = null;
+    try { record = this.queue.read('inbox', id); } catch (err) { return null; }
+    if (!record) return null;
+    const text = stripBotMention(record.text || '', this.botId()).slice(0, 4000);
+    return {
+      msgId: String(record.discordMessageId || record.id || id),
+      channelId: String(record.channelId || ''),
+      text,
+      authorName: String(record.authorDisplayName || '').slice(0, 64),
+      authorHash: String(record.authorIdHash || ''),
+      ts: Number(record.createdTimestamp) || 0,
+      trust: 'untrusted_discord_content',
+    };
+  }
+
+  enableEnvelope(options = {}) {
+    const envelope = (this.config && this.config.envelope) || {};
+    const stateDir = options.stateDir || this.stateDir();
+    this.envelope = new EnvelopeIngress({
+      bridge: this,
+      queue: this.queue,
+      config: this.config,
+      now: this.now,
+      alert: (entry) => this.alert(entry),
+      outboxChannelId: options.outboxChannelId || envelope.outboxChannelId,
+      webhookIds: options.webhookIds || envelope.webhookIds || [],
+      botId: options.botId || this.botId(),
+      currentKey: options.currentKey || '',
+      previousKey: options.previousKey || '',
+      previousSince: options.previousSince,
+      windowMs: options.windowMs == null ? envelope.rotationWindowMs : options.windowMs,
+      stateDir,
+      resolveMessage: options.resolveMessage || this.resolveMessage,
+    });
+    return this.envelope;
+  }
+
+  handleEnvelope(message) {
+    if (!this.envelope) return Promise.resolve({ ignored: true, reason: 'envelope_off' });
+    return this.envelope.handle(message);
   }
 
   outboxSigRequired() {
@@ -279,6 +337,10 @@ class Bridge {
   }
 
   silenced() {
+    return this.disabled();
+  }
+
+  disabled() {
     return !this.config.features || this.config.features.enabled !== true || this.killSwitchOn();
   }
 
@@ -876,6 +938,13 @@ class Bridge {
     try {
       await this.flushOutbox();
       await this.checkTimeouts();
+      if (this.envelope) {
+        try {
+          await this.envelope.sweep();
+        } catch (err) {
+          this.log.warn({ event: 'envelope_sweep_failed', ...errorFields(err) });
+        }
+      }
       this.maybeSweep();
     } catch (err) {
       this.log.error({ event: 'tick_error', ...errorFields(err) });
@@ -931,13 +1000,18 @@ function secretList(config, env) {
     'QUEUE_HMAC_KEY',
     'ALERT_WEBHOOK_URL',
     'ALERT_WEBHOOK_KEY',
+    'ENVELOPE_HMAC_KEY',
+    'ENVELOPE_HMAC_KEY_PREVIOUS',
+    'OUTBOX_HMAC_KEY',
   ];
   if (config.discord && config.discord.tokenEnv) names.push(config.discord.tokenEnv);
   if (config.wake && config.wake.keyEnv) names.push(config.wake.keyEnv);
   if (config.wake && config.wake.urlEnv) names.push(config.wake.urlEnv);
   const values = [];
   for (const name of names) {
-    if (env[name]) values.push(env[name]);
+    let value = '';
+    try { value = secretValue(env, name); } catch (err) { value = ''; }
+    if (value) values.push(value);
   }
   return values;
 }
@@ -974,9 +1048,12 @@ function attachToClient(client, options = {}) {
   if (config.queue && config.queue.requireOutboxSig === false) {
     log.warn({ event: 'outbox_signature_optional' });
   }
+  const resolved = (name) => {
+    try { return secretValue(env, name); } catch (err) { return ''; }
+  };
   const wake = options.wake || new WakeHandoff({
-    url: env[config.wake.urlEnv] || '',
-    key: env[config.wake.keyEnv] || '',
+    url: resolved(config.wake.urlEnv),
+    key: resolved(config.wake.keyEnv),
     allowedHosts: config.wake.allowedHosts,
     quietMs: config.wake.coalesceQuietMs,
     maxBatch: config.wake.coalesceMaxBatch,
@@ -998,30 +1075,104 @@ function attachToClient(client, options = {}) {
     resolveMessage: options.resolveMessage,
     rateLimits: options.rateLimits,
     intervalMs: options.intervalMs,
-    hmacKey: options.hmacKey || env[config.wake.hmacEnv || 'QUEUE_HMAC_KEY'] || '',
-    alertUrl: options.alertUrl || env.ALERT_WEBHOOK_URL || '',
-    alertKey: options.alertKey || env.ALERT_WEBHOOK_KEY || '',
+    hmacKey: options.hmacKey || resolved(config.wake.hmacEnv || 'QUEUE_HMAC_KEY'),
+    alertUrl: options.alertUrl || resolved('ALERT_WEBHOOK_URL'),
+    alertKey: options.alertKey || resolved('ALERT_WEBHOOK_KEY'),
     alertHosts: options.alertHosts || (config.wake && config.wake.allowedHosts) || [],
     alertFetch: options.alertFetch,
-    token: options.token || env[config.discord.tokenEnv] || env.DISCORD_TOKEN || '',
-    tokenLockDir: options.tokenLockDir,
+    token: options.token || resolved(config.discord.tokenEnv) || resolved('DISCORD_TOKEN'),
+    tokenLockDir: options.tokenLockDir || env.DBR_TOKEN_LOCK_DIR || undefined,
+    stateDir: options.stateDir || env.DBR_STATE_DIR || '',
     lock: options.lock,
     secrets: options.secrets || secretList(config, env),
     alerter: options.alerter,
   });
   const prefixes = options.ignorePrefixes || config.policy.ignorePrefixes || ['!!'];
-  const listener = (msg) => {
+  const handle = (msg) => {
     if (msg && typeof msg.content === 'string' && prefixes.some((prefix) => prefix && msg.content.startsWith(prefix))) {
       return undefined;
     }
     return bridge.handleMessage(msg);
   };
+  let backfill = null;
+  if (options.backfill && config.features.enabled) {
+    const channelIds = [...((config.discord && config.discord.channelIds) || [])];
+    if (envelopeConfigured(config)) channelIds.push(config.envelope.outboxChannelId);
+    backfill = new Backfill({
+      client,
+      log,
+      handle,
+      channelIds,
+      cursorFile: path.join(queue.root, 'state', 'cursor.json'),
+      botId: () => bridge.botId(),
+      rateCheck: (msg) => bridge.rates.check(msg.author && msg.author.id, msg.channelId, bridge.now()),
+      killSwitchOn: () => bridge.killSwitchOn(),
+      now: options.now,
+      schedule: options.backfillSchedule,
+    });
+  }
+  const listener = (msg) => {
+    if (backfill) backfill.note(msg);
+    return handle(msg);
+  };
   client.on('messageCreate', listener);
   bridge.listener = listener;
+  bridge.backfill = backfill;
+  if (envelopeConfigured(config)) {
+    let previousSince = null;
+    const rotationFile = path.join(bridge.stateDir(), 'envelope-rotation.json');
+    if (fs.existsSync(rotationFile)) {
+      try {
+        previousSince = JSON.parse(fs.readFileSync(rotationFile, 'utf8')).previousSince;
+      } catch (err) {
+        previousSince = null;
+      }
+    }
+    if (env.ENVELOPE_ROTATION_SINCE) previousSince = Number(env.ENVELOPE_ROTATION_SINCE);
+    bridge.enableEnvelope({
+      currentKey: resolved(config.envelope.hmacEnv || 'ENVELOPE_HMAC_KEY'),
+      previousKey: resolved(config.envelope.previousHmacEnv || 'ENVELOPE_HMAC_KEY_PREVIOUS'),
+      previousSince,
+      botId: (config.discord && config.discord.botUserId) || '',
+    });
+    const envelopeListener = (msg) => bridge.handleEnvelope(msg);
+    client.on('messageCreate', envelopeListener);
+    bridge.envelopeListener = envelopeListener;
+    if (backfill) backfill.observe = (msg) => bridge.handleEnvelope(msg);
+  }
   trackGateway(client, log);
+  const onConnected = () => {
+    if (backfill) {
+      backfill.trigger('connected').catch((err) => log.warn({ event: 'backfill_failed', ...errorFields(err) }));
+    }
+  };
+  client.on('ready', onConnected);
+  client.on('shardResume', onConnected);
+  let monitor = null;
+  if (options.liveness) {
+    monitor = new GatewayMonitor({
+      client,
+      log,
+      heartbeatFile: options.liveness.heartbeatFile || path.join(expandHome(config.logging.dir), 'heartbeat.json'),
+      onStale: options.liveness.onStale,
+      now: options.now,
+      intervalMs: options.liveness.intervalMs,
+      staleMs: options.liveness.staleMs,
+      notReadyMs: options.liveness.notReadyMs,
+      sleepGapMs: options.liveness.sleepGapMs,
+      setInterval: options.liveness.setInterval,
+      clearInterval: options.liveness.clearInterval,
+    }).start();
+  }
+  bridge.monitor = monitor;
   if (options.autostart !== false && config.features.enabled) bridge.start();
   bridge.detach = () => {
     client.removeListener('messageCreate', listener);
+    if (bridge.envelopeListener) client.removeListener('messageCreate', bridge.envelopeListener);
+    client.removeListener('ready', onConnected);
+    client.removeListener('shardResume', onConnected);
+    if (backfill) backfill.stop();
+    if (monitor) monitor.stop();
     bridge.stop();
   };
   return bridge;

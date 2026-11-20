@@ -9,6 +9,7 @@ function main(argv) {
     console.log(`68672 base+reactions = ${PRESETS.reactions}`);
     console.log(`85056 embeds+reactions = ${PRESETS.embedsAndReactions}`);
     console.log(`274877992000 threads = ${PRESETS.withThreads}`);
+    console.log(`74752 outbox channel overwrite (view, history, manage messages 8192) = ${PRESETS.outboxChannel}`);
     return PRESETS;
   }
   if (names.some((name) => String(name).toUpperCase() === 'ADMINISTRATOR')) {

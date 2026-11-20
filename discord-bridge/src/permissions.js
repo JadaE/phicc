@@ -9,6 +9,7 @@ const PERMISSIONS = Object.freeze({
   ADMINISTRATOR: 1 << 3,
   VIEW_CHANNEL: 1 << 10,
   SEND_MESSAGES: 1 << 11,
+  MANAGE_MESSAGES: 1 << 13,
   EMBED_LINKS: 1 << 14,
   READ_MESSAGE_HISTORY: 1 << 16,
   SEND_MESSAGES_IN_THREADS: 2 ** 38,
@@ -18,6 +19,7 @@ const BASE_NAMES = ['VIEW_CHANNEL', 'SEND_MESSAGES', 'READ_MESSAGE_HISTORY'];
 const REACTION_NAMES = BASE_NAMES.concat(['ADD_REACTIONS']);
 const EMBED_REACTION_NAMES = BASE_NAMES.concat(['EMBED_LINKS', 'ADD_REACTIONS']);
 const THREAD_NAMES = EMBED_REACTION_NAMES.concat(['SEND_MESSAGES_IN_THREADS']);
+const OUTBOX_CHANNEL_NAMES = ['VIEW_CHANNEL', 'READ_MESSAGE_HISTORY', 'MANAGE_MESSAGES'];
 
 function permissionInteger(names) {
   if (!Array.isArray(names) || names.length === 0) {
@@ -47,6 +49,7 @@ const PRESETS = Object.freeze({
   reactions: permissionInteger(REACTION_NAMES),
   embedsAndReactions: permissionInteger(EMBED_REACTION_NAMES),
   withThreads: permissionInteger(THREAD_NAMES),
+  outboxChannel: permissionInteger(OUTBOX_CHANNEL_NAMES),
 });
 
 module.exports = {
@@ -56,5 +59,6 @@ module.exports = {
   REACTION_NAMES,
   EMBED_REACTION_NAMES,
   THREAD_NAMES,
+  OUTBOX_CHANNEL_NAMES,
   permissionInteger,
 };

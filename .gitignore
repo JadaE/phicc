@@ -3,6 +3,7 @@
 .env*
 auth.json
 config.local.json
+reply.env
 node_modules/
 secretStuff.txt
 queue/

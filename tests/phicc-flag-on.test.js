@@ -10,6 +10,7 @@ process.env.DBR_FEATURES_ENABLED = 'true';
 process.env.DBR_QUEUE_DIR = path.join(root, 'queue');
 process.env.DBR_FEATURES_KILLSWITCHFILE = path.join(root, 'STOP');
 process.env.DBR_LOGGING_DIR = path.join(root, 'logs');
+process.env.DBR_TOKEN_LOCK_DIR = path.join(root, 'locks');
 process.env.DBR_DISCORD_GUILDIDS = '100000000000000111';
 process.env.DBR_DISCORD_CHANNELIDS = '100000000000000222';
 process.env.DBR_DISCORD_ALLOWEDUSERIDS = '100000000000000333';
@@ -65,6 +66,7 @@ describe('Phicc with the bridge flag on', () => {
 
   it('keeps !! commands on the old path and sends mentions only to the bridge', async () => {
     assert.ok(bot.phiccBridge);
+    assert.equal(bot.phiccBridge.tokenLockDir, process.env.DBR_TOKEN_LOCK_DIR);
     assert.equal(bot.listenerCount('messageCreate'), 2);
     bot.user = { id: '100000000000000444' };
     const seen = [];
