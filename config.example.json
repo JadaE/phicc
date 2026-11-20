@@ -33,6 +33,8 @@
     "maxReplyChunks": 3,
     "maxReplyChars": 1900,
     "commsTimeoutMinutes": 10,
+    "typingIntervalMs": 8000,
+    "typingCapMs": 300000,
     "retentionDays": 7
   },
   "queue": {

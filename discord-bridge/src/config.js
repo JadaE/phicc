@@ -7,6 +7,13 @@ const { clampLimit } = require('./policy');
 
 const SNOWFLAKE = /^\d{17,20}$/;
 
+const TYPING_INTERVAL_MIN = 1000;
+const TYPING_INTERVAL_MAX = 20000;
+const TYPING_INTERVAL_DEFAULT = 8000;
+const TYPING_CAP_MIN = 10000;
+const TYPING_CAP_MAX = 900000;
+const TYPING_CAP_DEFAULT = 300000;
+
 const ROOT = path.join(__dirname, '..', '..');
 
 function defaultConfig() {
@@ -35,6 +42,8 @@ function defaultConfig() {
       maxReplyChunks: 3,
       maxReplyChars: 1900,
       commsTimeoutMinutes: 10,
+      typingIntervalMs: TYPING_INTERVAL_DEFAULT,
+      typingCapMs: TYPING_CAP_DEFAULT,
       retentionDays: 7,
     },
     queue: { dir: '~/discord-bridge/comms-bot/queue', requireOutboxSig: true },
@@ -199,6 +208,9 @@ function clampConfig(config) {
   config.policy.maxReplyChars = clampLimit(config.policy.maxReplyChars, 1, 1900, 1900);
   config.policy.commsTimeoutMinutes = clampLimit(config.policy.commsTimeoutMinutes, 1, 60, 10);
   config.policy.retentionDays = clampLimit(config.policy.retentionDays, 1, 30, 7);
+  const typing = clampTyping(config.policy);
+  config.policy.typingIntervalMs = typing.intervalMs;
+  config.policy.typingCapMs = typing.capMs;
   const wakeCap = clampLimit(config.wake.maxPerHour, 1, limits.globalPerHour, limits.globalPerHour);
   config.wake.maxPerHour = Math.min(wakeCap, limits.globalPerHour);
   config.wake.maxFailedAttempts = clampLimit(config.wake.maxFailedAttempts, 1, 30, 8);
@@ -207,6 +219,19 @@ function clampConfig(config) {
   if (!config.queue) config.queue = {};
   if (config.queue.requireOutboxSig !== false) config.queue.requireOutboxSig = true;
   return config;
+}
+
+function clampTyping(policy = {}) {
+  const source = policy || {};
+  return {
+    intervalMs: clampLimit(
+      source.typingIntervalMs,
+      TYPING_INTERVAL_MIN,
+      TYPING_INTERVAL_MAX,
+      TYPING_INTERVAL_DEFAULT,
+    ),
+    capMs: clampLimit(source.typingCapMs, TYPING_CAP_MIN, TYPING_CAP_MAX, TYPING_CAP_DEFAULT),
+  };
 }
 
 function refuse(code) {
@@ -306,6 +331,13 @@ module.exports = {
   applyEnv,
   loadConfig,
   clampConfig,
+  clampTyping,
+  TYPING_INTERVAL_MIN,
+  TYPING_INTERVAL_MAX,
+  TYPING_INTERVAL_DEFAULT,
+  TYPING_CAP_MIN,
+  TYPING_CAP_MAX,
+  TYPING_CAP_DEFAULT,
   assertReady,
   assertConfigMode,
   isPlaceholder,
