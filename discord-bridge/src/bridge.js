@@ -8,14 +8,17 @@ const { WakeHandoff } = require('./wake');
 const { chunkReply } = require('./chunk');
 const { redactSecrets } = require('./redact');
 const { createLogger, errorFields } = require('./log');
-const { loadConfig, assertReady, expandHome, clampConfig } = require('./config');
+const { loadConfig, assertReady, expandHome, clampConfig, clampTyping } = require('./config');
 const { trackGateway } = require('./reconnect');
 const { signRecord, verifyRecord } = require('./sign');
 const { Alerter } = require('./alert');
 const { BridgeLock } = require('./lock');
 
+// New object on every call. discord.js 13.6 uses this as a prototype and then
+// assigns parse, which throws if the object is frozen. repliedUser false tells
+// Discord not to ping the author of the message being replied to.
 function allowedMentions() {
-  return { parse: [] };
+  return { parse: [], repliedUser: false };
 }
 
 const FAILURE_NOTICE = "Couldn't answer that one. It's logged.";
@@ -122,6 +125,7 @@ class Bridge {
     this.rewakes = {};
     this.rewakeQueued = new Set();
     this.prepaid = new Set();
+    this.typing = new Map();
     this.wakeDeferMs = 60000;
     this.hmacKey = options.hmacKey || '';
     this.token = options.token || '';
@@ -265,6 +269,7 @@ class Bridge {
       this.stopAlerted = false;
       return false;
     }
+    this.clearAllTyping();
     if (this.wake && typeof this.wake.discardPending === 'function') this.wake.discardPending();
     if (!this.stopAlerted) {
       this.stopAlerted = true;
@@ -418,6 +423,107 @@ class Bridge {
     };
   }
 
+  logTypingFailure(messageId, err) {
+    try {
+      if (this.log && typeof this.log.warn === 'function') {
+        this.log.warn({
+          event: 'typing_failed',
+          messageId: messageId == null ? undefined : String(messageId),
+          ...errorFields(err),
+        });
+      }
+    } catch (ignore) {
+      // Logging must not break message handling.
+    }
+  }
+
+  startTyping(message) {
+    try {
+      if (!message || message.id == null) return;
+      if (this.stoppedLoop || this.killSwitchOn()) return;
+      const id = String(message.id);
+      if (this.typing.has(id)) return;
+      const channel = message.channel;
+      if (!channel || typeof channel.sendTyping !== 'function') return;
+      const timing = clampTyping(this.config && this.config.policy);
+      this.typing.set(id, {
+        channel,
+        intervalMs: timing.intervalMs,
+        capMs: timing.capMs,
+        elapsedMs: 0,
+        timer: null,
+      });
+      this.pulseTyping(id);
+      this.scheduleTyping(id);
+    } catch (err) {
+      this.logTypingFailure(message && message.id, err);
+    }
+  }
+
+  pulseTyping(id) {
+    const entry = this.typing.get(String(id));
+    if (!entry || !entry.channel || typeof entry.channel.sendTyping !== 'function') return;
+    let pending;
+    try {
+      pending = entry.channel.sendTyping();
+    } catch (err) {
+      this.logTypingFailure(id, err);
+      return;
+    }
+    Promise.resolve(pending).then(() => {}, (err) => this.logTypingFailure(id, err));
+  }
+
+  scheduleTyping(id) {
+    const key = String(id);
+    const entry = this.typing.get(key);
+    if (!entry || entry.timer) return;
+    const remaining = entry.capMs - entry.elapsedMs;
+    if (!Number.isFinite(remaining) || remaining <= 0) {
+      this.clearTyping(key);
+      return;
+    }
+    const delay = Math.min(entry.intervalMs, remaining);
+    if (!Number.isFinite(delay) || delay <= 0) {
+      this.clearTyping(key);
+      return;
+    }
+    const timer = setTimeout(() => this.onTypingTick(key, delay), delay);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    entry.timer = timer;
+  }
+
+  onTypingTick(id, delay) {
+    const key = String(id);
+    const entry = this.typing.get(key);
+    if (!entry) return;
+    entry.timer = null;
+    entry.elapsedMs += delay;
+    if (this.stoppedLoop || this.killSwitchOn() || entry.elapsedMs >= entry.capMs) {
+      this.clearTyping(key);
+      return;
+    }
+    this.pulseTyping(key);
+    if (!this.typing.has(key) || this.stoppedLoop || this.killSwitchOn()) {
+      this.clearTyping(key);
+      return;
+    }
+    this.scheduleTyping(key);
+  }
+
+  clearTyping(id) {
+    if (id == null) return;
+    const key = String(id);
+    const entry = this.typing.get(key);
+    if (!entry) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = null;
+    this.typing.delete(key);
+  }
+
+  clearAllTyping() {
+    for (const id of [...this.typing.keys()]) this.clearTyping(id);
+  }
+
   async react(message, emoji) {
     if (!emoji || !message || typeof message.react !== 'function') return;
     try {
@@ -503,6 +609,7 @@ class Bridge {
       if (this.hmacKey) record = signRecord(record, this.hmacKey);
       const queued = this.queue.enqueue(record);
       if (!queued.ok) return { accepted: false, reason: 'duplicate' };
+      this.startTyping(message);
       this.rates.commit(message.author.id, decision.channelId, this.now());
       this.saveRates();
       const reactions = this.config.policy.reactions || {};
@@ -563,6 +670,7 @@ class Bridge {
   }
 
   rejectReply(id, reason) {
+    this.clearTyping(id);
     this.queue.fail(id, { error: reason });
     return this.alert({
       level: 'P0',
@@ -577,11 +685,13 @@ class Bridge {
     if (this.queue.exists('done', id)) {
       this.queue.remove('outbox', id);
       this.queue.removeSending(id);
+      this.clearTyping(id);
       return { alreadyDone: true };
     }
     if (this.queue.exists('dead', id)) {
       this.queue.remove('outbox', id);
       this.queue.removeSending(id);
+      this.clearTyping(id);
       await this.alert({ level: 'P0', reason: 'reply_rejected', detail: 'already_dead', messageId: id });
       return { dead: true, reason: 'already_dead' };
     }
@@ -610,6 +720,7 @@ class Bridge {
     if (!inbox) {
       this.queue.remove('outbox', id);
       this.queue.removeSending(id);
+      this.clearTyping(id);
       await this.alert({ level: 'P0', reason: 'reply_rejected', detail: 'unknown_id', messageId: id });
       return { rejected: true, reason: 'unknown_id' };
     }
@@ -638,6 +749,7 @@ class Bridge {
         reply.sentChunks = index + 1;
         this.queue.writeSending(id, this.seal(reply));
       }
+      this.clearTyping(id);
       await this.swapReaction(message);
       this.queue.complete(id, { chunks: chunks.length });
       return { done: true, chunks: chunks.length };
@@ -659,6 +771,7 @@ class Bridge {
       } catch (noticeErr) {
         this.log.warn({ event: 'failure_notice_failed', messageId: id, ...errorFields(noticeErr) });
       }
+      this.clearTyping(id);
       this.queue.fail(id, { error: 'send_failed' });
       return { dead: true, reason: 'send_failed' };
     }
@@ -714,11 +827,13 @@ class Bridge {
     try {
       const message = await this.resolveMessage(this.client, item.channelId, item.discordMessageId);
       await this.replyWithRetry(message, TIMEOUT_NOTICE);
+      this.clearTyping(item.discordMessageId);
       item.timeoutNotified = true;
       this.queue.overwrite('inbox', item.discordMessageId, this.seal(item));
       await this.requestRewake(item.discordMessageId);
     } catch (err) {
       if (isUnreachable(err)) {
+        this.clearTyping(item.discordMessageId);
         this.queue.fail(item.discordMessageId, { error: 'unreachable' });
         return;
       }
@@ -799,6 +914,7 @@ class Bridge {
 
   stop() {
     this.stoppedLoop = true;
+    this.clearAllTyping();
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     if (this.wake) this.wake.stop();

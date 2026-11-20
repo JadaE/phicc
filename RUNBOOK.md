@@ -143,7 +143,7 @@ There is no filesystem watcher and no call from this process into another agent.
 <queue dir>/dead/<message id>.json
 ```
 
-Directories are mode 700, files are mode 600. Each inbox record has `trust: "untrusted_discord_content"`, a `source` block, the message id, channel, guild, an HMAC of the author id (key in `queue/state/author.key`, not a raw SHA-256), the display name, and the text with the bot mention removed. It does not store a raw user id or a token. When `QUEUE_HMAC_KEY` is set, the bridge signs every inbox record and re-signs it after the bridge itself updates that file. `queue.requireOutboxSig` defaults to true. Only `config.local.json` can set it to false. The example file and environment variables cannot turn it off. When it is true, Comms Bot must sign the outbox with the same key. When it is false, the bridge still signs the inbox, logs `outbox_signature_optional`, and accepts an unsigned outbox only if the reply names a pending inbox id, uses that record's channel, stays inside 3 chunks of 1900 characters, and is the only reply for that id. Invite links and masked links are removed. `allowedMentions` stays empty. A second file for an id already in `done/` or `dead/` is not posted.
+Directories are mode 700, files are mode 600. Each inbox record has `trust: "untrusted_discord_content"`, a `source` block, the message id, channel, guild, an HMAC of the author id (key in `queue/state/author.key`, not a raw SHA-256), the display name, and the text with the bot mention removed. It does not store a raw user id or a token. When `QUEUE_HMAC_KEY` is set, the bridge signs every inbox record and re-signs it after the bridge itself updates that file. `queue.requireOutboxSig` defaults to true. Only `config.local.json` can set it to false. The example file and environment variables cannot turn it off. When it is true, Comms Bot must sign the outbox with the same key. When it is false, the bridge still signs the inbox, logs `outbox_signature_optional`, and accepts an unsigned outbox only if the reply names a pending inbox id, uses that record's channel, stays inside 3 chunks of 1900 characters, and is the only reply for that id. Invite links and masked links are removed. Replies do not ping anyone, including the author of the message being replied to. A second file for an id already in `done/` or `dead/` is not posted.
 
 Comms Bot writes `outbox/<message id>.json` and signs it with the same key:
 
@@ -151,7 +151,7 @@ Comms Bot writes `outbox/<message id>.json` and signs it with the same key:
 { "replyTo": "<message id>", "channelId": "<same channel>", "text": "answer", "final": true, "sig": "<hmac>" }
 ```
 
-The bridge posts only when `replyTo` matches the file name, the channel matches the inbox item, and that channel is still allowlisted. Replies use `allowedMentions: { parse: [] }`, so nobody is pinged. Text is split on line breaks into pieces of at most 1900 characters, at most 3 pieces. Anything past that is cut and the last piece ends with `[truncated]`. Then the inbox item moves to `done/`. A send that still fails is written to `dead/`, the bridge adds the fail reaction when reactions are on, and it sends one short "couldn't answer, logged" reply.
+The bridge posts only when `replyTo` matches the file name, the channel matches the inbox item, and that channel is still allowlisted. Every reply, including the short failure notice and the still-working notice, passes a fresh unfrozen `allowedMentions` of `{ parse: [], repliedUser: false }`. Discord parses no mentions from the text and does not ping the author of the message being replied to. Text is split on line breaks into pieces of at most 1900 characters, at most 3 pieces. Anything past that is cut and the last piece ends with `[truncated]`. Then the inbox item moves to `done/`. A send that still fails is written to `dead/`, the bridge adds the fail reaction when reactions are on, and it sends one short "couldn't answer, logged" reply.
 
 A duplicate gateway event for a message id that is already in `inbox/`, `outbox/`, `done/`, or `dead/` is dropped.
 
@@ -161,13 +161,15 @@ If Comms Bot has not written a final outbox file within `policy.commsTimeoutMinu
 
 Reactions, when enabled: eyes when the mention is queued, check when the reply is sent, cross when it is dead-lettered. If the bot lacks Add Reactions, the reaction fails and the queue still moves.
 
+Typing: an accepted mention (it passed the allowlists and was written to the inbox) calls `channel.sendTyping()` immediately, then again every `policy.typingIntervalMs` milliseconds so Discord keeps the indicator up. The default is 8000, clamped to 1000–20000. It stops when the reply for that message is sent (the answer or the still-working notice), when the reply is dead-lettered, when the STOP file is present or the bridge shuts down, or after `policy.typingCapMs` milliseconds, whichever comes first. The cap defaults to 300000 (five minutes) and is clamped to 10000–900000. One timer is tracked per message id. A duplicate event does not start a second one. Rejected and ignored messages never start it. A `sendTyping` failure is logged at warn and does not stop the queue or the process. The outbox poll stays at one second.
+
 ## Kill switch
 
 ```bash
 touch ~/discord-bridge/phicc/STOP
 ```
 
-Use the path in `features.killSwitchFile`. The bridge checks that file on every event, so it goes quiet on the next message (well under a second) and stays connected. It does not enqueue mentions, does not post outbox replies, and drops wakes that have not been sent. Dropped ids leave the re-wake queue, so removing the file lets them be woken again. If the check itself throws, the switch is treated as on. Phicc's `!!` commands keep working, because they are a different listener. A P0 alert is written when the file appears.
+Use the path in `features.killSwitchFile`. The bridge checks that file on every event, so it goes quiet on the next message (well under a second) and stays connected. It does not enqueue mentions, does not post outbox replies, drops wakes that have not been sent, and clears typing timers. The next typing refresh also stops if the file appears between polls. Dropped ids leave the re-wake queue, so removing the file lets them be woken again. If the check itself throws, the switch is treated as on. Phicc's `!!` commands keep working, because they are a different listener. A P0 alert is written when the file appears. Shutting the process down clears the same timers.
 
 Remove the file and the bridge handles new mentions again. You do not have to restart for the file. You do have to restart after changing `PHICC_BRIDGE_ENABLED` or `features.enabled`.
 
@@ -233,7 +235,7 @@ Reset the token in the Developer Portal, update the env var, restart. Do this if
 Do this only after you have decided the test channel and the token are ready. This repository's tests are offline and do not perform these steps.
 
 1. Start with the kill switch in place, or with sending left unused, and confirm the process reaches `ready` in the test guild and posts nothing.
-2. Remove the kill switch. Mention the bot. You should see the eyes reaction (if the invite allows it), one inbox file, one webhook run, then a reply to that message and a move to `done/`.
+2. Remove the kill switch. Mention the bot. You should see the eyes reaction (if the invite allows it), a typing indicator, one inbox file, one webhook run, then a reply to that message that does not ping you, and a move to `done/`. The typing indicator clears when that reply is sent.
 3. A message in another channel, from another user, without a mention, or with only `@everyone` or a role mention, gets no reply.
 4. `!!rulereader` and `!!reactionroletest` still do what they did before, with the flag on and with it off.
 

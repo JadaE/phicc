@@ -2,7 +2,7 @@
 
 Forkable mention bridge for a Discord bot and a Grok Bot teammate.
 
-The bridge process is the only thing that holds the Discord token. It accepts `@mentions` from allowlisted users (or roles) in allowlisted guilds and channels, writes one JSON file per message under `queue/{inbox,outbox,done,dead}`, and POSTs a tiny wake body to a Grok Bot routine webhook. Comms Bot reads the inbox and writes the outbox. The bridge replies in Discord with `allowedMentions` set to `{ "parse": [] }`.
+The bridge process is the only thing that holds the Discord token. It accepts `@mentions` from allowlisted users (or roles) in allowlisted guilds and channels, writes one JSON file per message under `queue/{inbox,outbox,done,dead}`, and POSTs a tiny wake body to a Grok Bot routine webhook. Comms Bot reads the inbox and writes the outbox. An accepted mention shows a typing indicator until the reply is sent, dead-lettered, stopped, or the typing cap is reached. The bridge replies in Discord with `allowedMentions` set to `{ "parse": [], "repliedUser": false }`, so a reply does not ping anyone, including the author of the message being replied to.
 
 Phicc loads this library only when `PHICC_BRIDGE_ENABLED=true`. See the repo `RUNBOOK.md` for the invite URL, env vars, kill switch, and rollback. Do not add a license file here unless the repo owner decides to.
 
