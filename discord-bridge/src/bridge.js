@@ -60,6 +60,7 @@ const MAX_REWAKES = 2;
 
 function stripOutbound(text) {
   return String(text)
+    .replace(/https?:\/\/(?:[\w.-]+\.)?discord(?:app)?\.com\/api\/webhooks\/\S+/gi, '[link removed]')
     .replace(/https?:\/\/(?:www\.)?(?:discord\.gg|discord(?:app)?\.com\/invite)\/\S+/gi, '[link removed]')
     .replace(/\[([^\]]*)\]\((?:https?:\/\/|discord:\/\/)[^)]+\)/gi, '$1');
 }
@@ -200,6 +201,7 @@ class Bridge {
       previousSince: options.previousSince,
       windowMs: options.windowMs == null ? envelope.rotationWindowMs : options.windowMs,
       stateDir,
+      log: this.log,
       resolveMessage: options.resolveMessage || this.resolveMessage,
     });
     return this.envelope;
@@ -207,7 +209,10 @@ class Bridge {
 
   handleEnvelope(message) {
     if (!this.envelope) return Promise.resolve({ ignored: true, reason: 'envelope_off' });
-    return this.envelope.handle(message);
+    return Promise.resolve().then(() => this.envelope.handle(message)).catch((err) => {
+      this.log.error({ event: 'envelope_failed', ...errorFields(err) });
+      return { rejected: true, reason: 'store' };
+    });
   }
 
   outboxSigRequired() {
@@ -1186,6 +1191,7 @@ module.exports = {
   attachToClient,
   stripBotMention,
   looksLikeInjection,
+  stripOutbound,
   rateLimitDelay,
   shouldAudit,
 };

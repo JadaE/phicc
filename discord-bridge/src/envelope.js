@@ -5,12 +5,18 @@ const path = require('path');
 const { verifyRecord, signRecord } = require('./sign');
 const { replyChannelAllowed, isListed } = require('./policy');
 
+const { errorFields } = require('./log');
+
 const MAX_CONTENT_CHARS = 2000;
 const MAX_DECODED_BYTES = 8192;
 const MAX_PARTS = 8;
 const MAX_SKEW_MS = 30 * 60 * 1000;
 const PART_WINDOW_MS = 5 * 60 * 1000;
 const NONCE_TTL_MS = 48 * 60 * 60 * 1000;
+const SEEN_TTL_MS = NONCE_TTL_MS;
+const SEEN_SWEEP_LIMIT = 64;
+const SEEN_SWEEP_EVERY_MS = 60 * 1000;
+const ALERT_WINDOW_MS = 10 * 60 * 1000;
 const ROTATION_WINDOW_MS = 10 * 60 * 1000;
 const ALLOWED_KEYS = ['v', 'rid', 'ch', 'part', 'parts', 'nonce', 'ts', 'body', 'sig'];
 
@@ -109,9 +115,11 @@ function looksLikeEnvelope(content) {
 }
 
 class SeenIds {
-  constructor(dir) {
+  constructor(dir, ttlMs) {
     this.dir = dir;
-    this.memory = new Set();
+    this.ttlMs = ttlMs == null ? SEEN_TTL_MS : ttlMs;
+    this.memory = new Map();
+    this.cursor = 0;
   }
 
   pathFor(id) {
@@ -120,20 +128,95 @@ class SeenIds {
     return path.join(this.dir, key);
   }
 
-  has(id) {
-    const key = String(id || '');
-    if (!key) return false;
-    if (this.memory.has(key)) return true;
-    const file = this.pathFor(key);
-    return Boolean(file && fs.existsSync(file));
+  readStamp(file) {
+    try {
+      const seen = Number(fs.readFileSync(file, 'utf8'));
+      return Number.isFinite(seen) ? seen : null;
+    } catch (err) {
+      return null;
+    }
   }
 
-  add(id) {
+  fresh(seen, now) {
+    return Number.isFinite(seen) && seen >= 1e12 && now - seen <= this.ttlMs;
+  }
+
+  has(id, now) {
+    const key = String(id || '');
+    if (!key) return false;
+    const stamp = now == null ? Date.now() : now;
+    if (this.memory.has(key)) {
+      const seen = this.memory.get(key);
+      if (this.fresh(seen, stamp)) return true;
+      this.memory.delete(key);
+    }
+    const file = this.pathFor(key);
+    if (!file || !fs.existsSync(file)) return false;
+    const seen = this.readStamp(file);
+    if (seen == null) return true;
+    if (seen < 1e12) return true;
+    if (!this.fresh(seen, stamp)) return false;
+    this.memory.set(key, seen);
+    return true;
+  }
+
+  add(id, now) {
     const file = this.pathFor(id);
     if (!file) return;
-    this.memory.add(String(id));
+    const stamp = now == null ? Date.now() : now;
+    this.memory.set(String(id), stamp);
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    if (!fs.existsSync(file)) fs.writeFileSync(file, '1\n', { mode: 0o600 });
+    try { fs.chmodSync(this.dir, 0o700); } catch (err) { /* best effort */ }
+    fs.writeFileSync(file, `${stamp}\n`, { mode: 0o600 });
+    try { fs.chmodSync(file, 0o600); } catch (err) { /* best effort */ }
+  }
+
+  /**
+   * Drop ids older than the TTL. Examines at most `limit` directory entries
+   * so a large store cannot stall the tick. A legacy file with no timestamp
+   * is refreshed to `now` and then ages out on a later sweep.
+   */
+  sweep(now, limit) {
+    const stamp = now == null ? Date.now() : now;
+    const cap = Number.isInteger(limit) && limit > 0 ? limit : SEEN_SWEEP_LIMIT;
+    let memoryExamined = 0;
+    for (const [id, seenAt] of this.memory) {
+      if (memoryExamined >= cap) break;
+      memoryExamined += 1;
+      if (!this.fresh(seenAt, stamp)) this.memory.delete(id);
+    }
+    if (!this.dir || !fs.existsSync(this.dir)) return 0;
+    let names = [];
+    try {
+      names = fs.readdirSync(this.dir).filter((name) => /^\d{1,25}$/.test(name));
+    } catch (err) {
+      return 0;
+    }
+    if (names.length === 0) {
+      this.cursor = 0;
+      return 0;
+    }
+    let index = this.cursor % names.length;
+    let removed = 0;
+    let examined = 0;
+    const budget = Math.min(cap, names.length);
+    while (examined < budget) {
+      const name = names[index];
+      index = (index + 1) % names.length;
+      examined += 1;
+      const file = path.join(this.dir, name);
+      const seen = this.readStamp(file);
+      if (seen != null && seen < 1e12) {
+        try { fs.writeFileSync(file, `${stamp}\n`, { mode: 0o600 }); } catch (err) { /* ignore */ }
+        continue;
+      }
+      if (seen == null || !this.fresh(seen, stamp)) {
+        try { fs.unlinkSync(file); removed += 1; } catch (err) { /* ignore */ }
+        this.memory.delete(name);
+      }
+    }
+    this.cursor = names.length === examined ? 0 : index;
+    return removed;
   }
 }
 
@@ -354,6 +437,14 @@ class EnvelopeIngress {
     this.config = options.config;
     this.now = options.now || (() => Date.now());
     this.alert = options.alert || (async () => {});
+    this.log = options.log || { warn() {}, error() {} };
+    this.alertWindowMs = options.alertWindowMs == null ? ALERT_WINDOW_MS : options.alertWindowMs;
+    this.dropLogWindowMs = options.dropLogWindowMs == null ? ALERT_WINDOW_MS : options.dropLogWindowMs;
+    this.seenSweepEveryMs = options.seenSweepEveryMs == null ? SEEN_SWEEP_EVERY_MS : options.seenSweepEveryMs;
+    this.seenSweepLimit = options.seenSweepLimit == null ? SEEN_SWEEP_LIMIT : options.seenSweepLimit;
+    this.alertState = null;
+    this.dropLog = null;
+    this.lastSeenSweep = null;
     this.outboxChannelId = String(options.outboxChannelId || '');
     this.webhookIds = options.webhookIds || [];
     this.botId = String(options.botId || '');
@@ -369,7 +460,10 @@ class EnvelopeIngress {
     const stateDir = options.stateDir;
     this.nonces = options.nonces || new NonceStore(path.join(stateDir, 'nonces'), options.nonceTtlMs);
     this.parts = options.parts || new PartStore(path.join(stateDir, 'parts'));
-    this.seen = options.seen || new SeenIds(path.join(stateDir, 'envelope-seen'));
+    this.seen = options.seen || new SeenIds(
+      path.join(stateDir, 'envelope-seen'),
+      options.seenTtlMs,
+    );
     this.enabled = true;
   }
 
@@ -414,21 +508,89 @@ class EnvelopeIngress {
   alreadySeen(message) {
     const id = message && message.id;
     if (id == null) return false;
-    return this.seen.has(id) || this.parts.hasMessage(id);
+    return this.seen.has(id, this.now()) || this.parts.hasMessage(id);
+  }
+
+  logStore(err) {
+    try {
+      if (this.log && typeof this.log.error === 'function') {
+        this.log.error({ event: 'envelope_store', ...errorFields(err) });
+      }
+    } catch (logErr) { /* logging must not become the failure */ }
+  }
+
+  warnLimited(reason, message) {
+    try {
+      const now = this.now();
+      const state = this.dropLog;
+      if (state == null || now - state.start >= this.dropLogWindowMs) {
+        const suppressed = state ? state.suppressed : 0;
+        this.dropLog = { start: now, suppressed: 0 };
+        if (this.log && typeof this.log.warn === 'function') {
+          this.log.warn({
+            event: 'envelope_dropped',
+            reason: /^[a-z_]{1,40}$/.test(reason || '') ? reason : 'malformed',
+            suppressed,
+            messageId: message && message.id != null ? String(message.id) : '',
+            channelId: message && message.channelId != null ? String(message.channelId) : '',
+          });
+        }
+        return;
+      }
+      state.suppressed += 1;
+    } catch (err) { /* a log failure must not dead-letter the reply */ }
+  }
+
+  async coalesceAlert(entry) {
+    const now = this.now();
+    const state = this.alertState;
+    if (state != null && now - state.start < this.alertWindowMs) {
+      state.suppressed += 1;
+      return false;
+    }
+    const count = (state ? state.suppressed : 0) + 1;
+    this.alertState = { start: now, suppressed: 0 };
+    await this.alert({ ...entry, count });
+    return true;
+  }
+
+  async dropUnauthenticated(message, reason) {
+    await deleteMessage(message);
+    this.warnLimited(reason, message);
+    return { rejected: true, reason };
+  }
+
+  /**
+   * A copied or late part with its own Discord message id. Delete that message
+   * only. Leave any in-progress parts and the pending inbox item alone.
+   */
+  async dropCopy(message, reason, rid) {
+    await deleteMessage(message);
+    let done = false;
+    try {
+      done = Boolean(rid && this.queue && this.queue.exists('done', String(rid)));
+    } catch (err) {
+      done = false;
+    }
+    if (done) return { ignored: true, reason: 'already_done' };
+    this.warnLimited(reason, message);
+    return { dropped: true, reason };
   }
 
   async reject(message, reason, authenticated, rid) {
-    if (authenticated && rid && this.queue && this.queue.exists('done', String(rid))) {
+    if (!authenticated) return this.dropUnauthenticated(message, reason);
+    if (rid && this.queue && this.queue.exists('done', String(rid))) {
+      await deleteMessage(message);
       return { ignored: true, reason: 'already_done' };
     }
-    await this.deleteTracked(authenticated ? rid : null, message);
-    const deadId = authenticated && rid ? String(rid) : (message && message.id != null ? String(message.id) : '');
+    await this.deleteTracked(rid, message);
+    const deadId = rid ? String(rid) : '';
     if (deadId && /^\d{1,25}$/.test(deadId) && this.queue) {
       try {
         this.queue.fail(deadId, { error: reason, envelope: true });
       } catch (err) { /* still alert */ }
     }
-    await this.alert({
+    await this.coalesceAlert({
       level: 'P0',
       reason: 'envelope_rejected',
       detail: reason,
@@ -455,7 +617,7 @@ class EnvelopeIngress {
     if (!(result && (result.dead || result.rejected))) {
       return this.reject(null, 'pipeline', true, rid);
     }
-    await this.alert({
+    await this.coalesceAlert({
       level: 'P0',
       reason: 'envelope_rejected',
       detail: (result && result.reason) || 'pipeline',
@@ -466,6 +628,29 @@ class EnvelopeIngress {
   }
 
   async handle(message) {
+    const stage = { authenticated: false, rid: null };
+    try {
+      return await this.dispatch(message, stage);
+    } catch (err) {
+      try {
+        return await this.onStoreError(message, stage, err);
+      } catch (inner) {
+        this.logStore(inner);
+        return { rejected: true, reason: 'store' };
+      }
+    }
+  }
+
+  async onStoreError(message, stage, err) {
+    this.logStore(err);
+    if (stage && stage.authenticated) {
+      return this.reject(message, 'store', true, stage.rid);
+    }
+    await deleteMessage(message);
+    return { rejected: true, reason: 'store' };
+  }
+
+  async dispatch(message, stage) {
     if (!this.enabled) return { ignored: true, reason: 'envelope_off' };
     if (this.bridge && typeof this.bridge.disabled === 'function' && this.bridge.disabled()) {
       return { ignored: true, reason: 'disabled' };
@@ -493,13 +678,17 @@ class EnvelopeIngress {
     if (!verifyEnvelope(parsed.record, this.keys())) {
       return this.reject(message, 'hmac', false, null);
     }
-    if (message && message.id != null) this.seen.add(message.id);
     const rec = parsed.record;
+    if (stage) {
+      stage.authenticated = true;
+      stage.rid = String(rec.rid);
+    }
+    if (message && message.id != null) this.seen.add(message.id, this.now());
     if (Math.abs(this.now() - rec.ts) > this.maxSkewMs) {
-      return this.reject(message, 'stale', true, rec.rid);
+      return this.dropCopy(message, 'stale', rec.rid);
     }
     if (!this.nonces.remember(rec.nonce, this.now())) {
-      return this.reject(message, 'replay', true, rec.rid);
+      return this.dropCopy(message, 'replay', rec.rid);
     }
 
     let inbox = null;
@@ -522,7 +711,16 @@ class EnvelopeIngress {
     return this.pipeline(assembled.text, rec);
   }
 
+  sweepSeen() {
+    if (!this.seen || typeof this.seen.sweep !== 'function') return 0;
+    const now = this.now();
+    if (this.lastSeenSweep != null && now - this.lastSeenSweep < this.seenSweepEveryMs) return 0;
+    this.lastSeenSweep = now;
+    return this.seen.sweep(now, this.seenSweepLimit);
+  }
+
   async sweep() {
+    try { this.sweepSeen(); } catch (err) { this.logStore(err); }
     const expired = this.parts.expired(this.now(), this.partWindowMs);
     const results = [];
     for (const rid of expired) {
@@ -539,6 +737,10 @@ module.exports = {
   MAX_SKEW_MS,
   PART_WINDOW_MS,
   NONCE_TTL_MS,
+  SEEN_TTL_MS,
+  SEEN_SWEEP_LIMIT,
+  SEEN_SWEEP_EVERY_MS,
+  ALERT_WINDOW_MS,
   ROTATION_WINDOW_MS,
   envelopeConfigured,
   selectKeys,

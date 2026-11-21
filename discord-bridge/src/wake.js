@@ -29,7 +29,8 @@ function parseHttpsWebhook(url, allowedHosts) {
   if (parsed.protocol !== 'https:') {
     throw webhookError('webhook url must be https', 'WEBHOOK_HTTPS');
   }
-  if (Array.isArray(allowedHosts) && allowedHosts.length > 0 && !allowedHosts.includes(parsed.hostname)) {
+  // An empty list is not "any host". Callers pass the explicit allowlist.
+  if (!Array.isArray(allowedHosts) || allowedHosts.length === 0 || !allowedHosts.includes(parsed.hostname)) {
     throw webhookError('webhook host is not allowed', 'WEBHOOK_HOST');
   }
   return parsed;

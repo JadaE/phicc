@@ -11,15 +11,22 @@ const {
   attachToClient,
   allowedMentions,
   signRecord,
+  assertReady,
+  defaultConfig,
 } = require('../discord-bridge');
+const { stripOutbound } = require('../discord-bridge/src/bridge');
 const { contentFor } = require('../discord-bridge/post-reply');
 const {
   parseEnvelopeJson,
   decodeBase64Url,
   NonceStore,
+  SeenIds,
   selectKeys,
   verifyEnvelope,
   NONCE_TTL_MS,
+  SEEN_TTL_MS,
+  SEEN_SWEEP_LIMIT,
+  ALERT_WINDOW_MS,
   ROTATION_WINDOW_MS,
 } = require('../discord-bridge/src/envelope');
 const { tempDir, rmrf, enabledConfig, fakeMessage, memoryLogger } = require('./helpers');
@@ -44,6 +51,7 @@ function setup(extra = {}) {
   const root = tempDir('phicc-envelope-');
   const time = extra.time || clocked();
   const alerts = [];
+  const log = extra.log || memoryLogger();
   const config = enabledConfig({
     queue: { dir: path.join(root, 'queue'), requireOutboxSig: true },
     features: { enabled: true, killSwitchFile: path.join(root, 'STOP') },
@@ -62,7 +70,7 @@ function setup(extra = {}) {
     client: { user: { id: BOT } },
     config,
     queue,
-    log: memoryLogger(),
+    log,
     wake: { notify: async () => {}, stop() {}, discardPending() {} },
     hmacKey: QUEUE_KEY,
     now: time.now,
@@ -76,7 +84,7 @@ function setup(extra = {}) {
     previousSince: extra.previousSince,
     botId: BOT,
   });
-  return { root, time, alerts, config, queue, bridge };
+  return { root, time, alerts, config, queue, bridge, log };
 }
 
 function record(overrides = {}) {
@@ -263,8 +271,9 @@ describe('signed envelope listener', () => {
       ts: ctx.time.now() - (31 * 60 * 1000),
     }), { id: '100000000000000817', deleted });
     assert.equal((await ctx.bridge.handleEnvelope(stale)).reason, 'stale');
-    assert.equal(ctx.queue.exists('dead', '100000000000000701'), true);
-    assert.equal(ctx.queue.exists('inbox', '100000000000000701'), false);
+    assert.equal(ctx.queue.exists('dead', '100000000000000701'), false);
+    assert.equal(ctx.queue.exists('inbox', '100000000000000701'), true);
+    assert.ok(deleted.includes(stale.id));
 
     const postedMention = await pending(ctx, '100000000000000702');
     replies = postedMention.replies;
@@ -351,7 +360,7 @@ describe('signed envelope listener', () => {
       part: 2,
       parts: 2,
       nonce: '88'.repeat(16),
-      body: 'https://discord.gg/example-invite please',
+      body: 'https://discord.gg/example-invite https://discord.com/api/webhooks/123/whsec-token-aaa https://discordapp.com/api/webhooks/456/whsec-token-bbb please',
     }), { id: '100000000000000826', deleted });
     assert.equal((await ctx.bridge.handleEnvelope(left)).waiting, true);
     const done = await ctx.bridge.handleEnvelope(right);
@@ -360,6 +369,10 @@ describe('signed envelope listener', () => {
     assert.deepEqual(payload.allowedMentions, allowedMentions());
     assert.match(payload.content, /\[link removed\]/);
     assert.equal(payload.content.includes('https://discord.gg'), false);
+    assert.equal(payload.content.includes('api/webhooks'), false);
+    assert.equal(payload.content.includes('whsec-token-aaa'), false);
+    assert.equal(payload.content.includes('whsec-token-bbb'), false);
+    assert.equal(payload.content.includes('discordapp.com'), false);
     assert.equal(ctx.queue.exists('done', '100000000000000706'), true);
     assert.ok(deleted.includes(left.id));
     assert.ok(deleted.includes(right.id));
@@ -547,5 +560,307 @@ describe('signed envelope listener', () => {
     assert.equal(ctx.queue.exists('inbox', rid), true);
     assert.equal(ctx.queue.exists('done', rid), false);
     assert.equal(ctx.alerts.length, 0);
+  });
+
+  it('logs unauthenticated rejects without a P0 or a dead file', async () => {
+    const ctx = setup();
+    dirs.push(ctx.root);
+    const rid = '100000000000000721';
+    await pending(ctx, rid);
+    const deleted = [];
+    const ids = ['100000000000000901', '100000000000000902', '100000000000000903'];
+    for (const id of ids) {
+      const message = envelopeMessage(record({ rid, nonce: 'a1'.repeat(16) }), {
+        id,
+        webhookId: '999',
+        deleted,
+      });
+      const result = await ctx.bridge.handleEnvelope(message);
+      assert.equal(result.reason, 'bad_webhook');
+      assert.equal(ctx.queue.exists('dead', id), false);
+      assert.ok(deleted.includes(id));
+    }
+    const badDecode = envelopeMessage(record({ rid }), {
+      id: '100000000000000904',
+      content: `<@${BOT}> DBR1 ${Buffer.from('{"no":true}', 'utf8').toString('base64url')}`,
+      deleted,
+    });
+    assert.equal((await ctx.bridge.handleEnvelope(badDecode)).reason, 'decode');
+    const forged = record({ rid, nonce: 'a2'.repeat(16) });
+    const signed = signRecord(forged, KEY);
+    signed.sig = '0'.repeat(64);
+    const badMac = envelopeMessage(forged, {
+      id: '100000000000000905',
+      content: `<@${BOT}> DBR1 ${Buffer.from(JSON.stringify(signed), 'utf8').toString('base64url')}`,
+      deleted,
+    });
+    assert.equal((await ctx.bridge.handleEnvelope(badMac)).reason, 'hmac');
+    assert.equal(ctx.alerts.length, 0);
+    assert.equal(ctx.queue.exists('inbox', rid), true);
+    assert.equal(ctx.queue.exists('dead', rid), false);
+    assert.equal(ctx.queue.exists('dead', badDecode.id), false);
+    assert.equal(ctx.queue.exists('dead', badMac.id), false);
+    const warns = () => ctx.log.entries.filter((entry) => entry.event === 'envelope_dropped');
+    assert.equal(warns().length, 1);
+    assert.equal(warns()[0].level, 'warn');
+    assert.equal(JSON.stringify(warns()).includes(KEY), false);
+    ctx.time.advance(ALERT_WINDOW_MS + 1);
+    const again = envelopeMessage(record({ rid }), {
+      id: '100000000000000906',
+      webhookId: '999',
+      deleted,
+    });
+    await ctx.bridge.handleEnvelope(again);
+    assert.equal(warns().length, 2);
+    assert.ok(warns()[1].suppressed >= 4);
+    assert.equal(ctx.alerts.length, 0);
+  });
+
+  it('drops a replay or stale copy and leaves the pending reply in the inbox', async () => {
+    const ctx = setup();
+    dirs.push(ctx.root);
+    const rid = '100000000000000722';
+    await pending(ctx, rid);
+    const deleted = [];
+    const part = envelopeMessage(record({
+      rid,
+      part: 1,
+      parts: 2,
+      nonce: 'b1'.repeat(16),
+      body: 'keep ',
+    }), { id: '100000000000000910', deleted });
+    assert.equal((await ctx.bridge.handleEnvelope(part)).waiting, true);
+    const copy = envelopeMessage(record({
+      rid,
+      part: 1,
+      parts: 2,
+      nonce: 'b1'.repeat(16),
+      body: 'keep ',
+    }), { id: '100000000000000911', deleted });
+    const replayed = await ctx.bridge.handleEnvelope(copy);
+    assert.equal(replayed.dropped, true);
+    assert.equal(replayed.reason, 'replay');
+    assert.ok(deleted.includes(copy.id));
+    assert.equal(deleted.includes(part.id), false);
+    assert.equal(ctx.queue.exists('inbox', rid), true);
+    assert.equal(ctx.queue.exists('dead', rid), false);
+    assert.equal(ctx.queue.exists('done', rid), false);
+    assert.equal(ctx.alerts.length, 0);
+    assert.equal(fs.existsSync(path.join(ctx.bridge.stateDir(), 'parts', `${rid}.json`)), true);
+
+    const stale = envelopeMessage(record({
+      rid,
+      part: 2,
+      parts: 2,
+      nonce: 'b2'.repeat(16),
+      ts: ctx.time.now() - (31 * 60 * 1000),
+      body: 'late',
+    }), { id: '100000000000000912', deleted });
+    const dropped = await ctx.bridge.handleEnvelope(stale);
+    assert.equal(dropped.dropped, true);
+    assert.equal(dropped.reason, 'stale');
+    assert.ok(deleted.includes(stale.id));
+    assert.equal(deleted.includes(part.id), false);
+    assert.equal(ctx.queue.exists('inbox', rid), true);
+    assert.equal(ctx.queue.exists('dead', rid), false);
+    assert.equal(ctx.alerts.length, 0);
+
+    const replies = [];
+    ctx.bridge.resolveMessage = async () => fakeMessage({
+      id: rid,
+      reply: async (payload) => {
+        replies.push(payload);
+        return { id: 'kept' };
+      },
+    });
+    const finish = envelopeMessage(record({
+      rid,
+      part: 2,
+      parts: 2,
+      nonce: 'b3'.repeat(16),
+      body: 'this half',
+    }), { id: '100000000000000913', deleted });
+    const done = await ctx.bridge.handleEnvelope(finish);
+    assert.equal(done.done, true);
+    assert.equal(replies.length, 1);
+    assert.equal(ctx.queue.exists('done', rid), true);
+    assert.equal(ctx.queue.exists('dead', rid), false);
+  });
+
+  it('turns a store error into a logged rejection instead of an unhandled rejection', async () => {
+    const ctx = setup();
+    dirs.push(ctx.root);
+    const rid = '100000000000000723';
+    await pending(ctx, rid);
+    ctx.bridge.envelope.seen.add = () => {
+      const error = new Error('disk');
+      error.code = 'EIO';
+      throw error;
+    };
+    const deleted = [];
+    const message = envelopeMessage(record({
+      rid,
+      nonce: 'c1'.repeat(16),
+      body: 'stored',
+    }), { id: '100000000000000920', deleted });
+    const result = await ctx.bridge.handleEnvelope(message);
+    assert.equal(result.rejected, true);
+    assert.equal(result.reason, 'store');
+    assert.equal(ctx.queue.exists('dead', rid), true);
+    const logged = ctx.log.entries.find((entry) => entry.event === 'envelope_store');
+    assert.equal(logged.level, 'error');
+    assert.equal(logged.code, 'EIO');
+    assert.equal(JSON.stringify(logged).includes(KEY), false);
+
+    const ctx2 = setup();
+    dirs.push(ctx2.root);
+    const pendingId = '100000000000000724';
+    await pending(ctx2, pendingId);
+    ctx2.bridge.envelope.seen.has = () => {
+      const error = new Error('disk');
+      error.code = 'EIO';
+      throw error;
+    };
+    const early = envelopeMessage(record({
+      rid: pendingId,
+      nonce: 'c2'.repeat(16),
+    }), { id: '100000000000000921', deleted });
+    const unauth = await ctx2.bridge.handleEnvelope(early);
+    assert.equal(unauth.reason, 'store');
+    assert.equal(ctx2.alerts.length, 0);
+    assert.equal(ctx2.queue.exists('dead', early.id), false);
+    assert.equal(ctx2.queue.exists('dead', pendingId), false);
+    assert.equal(ctx2.queue.exists('inbox', pendingId), true);
+  });
+
+  it('coalesces authenticated envelope_rejected alerts inside the window', async () => {
+    const ctx = setup();
+    dirs.push(ctx.root);
+    await pending(ctx, '100000000000000725');
+    const deleted = [];
+    const first = envelopeMessage(record({
+      rid: '100000000000000799',
+      nonce: 'd1'.repeat(16),
+    }), { id: '100000000000000930', deleted });
+    assert.equal((await ctx.bridge.handleEnvelope(first)).reason, 'not_pending');
+    assert.equal(ctx.alerts.length, 1);
+    assert.equal(ctx.alerts[0].count, 1);
+    const second = envelopeMessage(record({
+      rid: '100000000000000798',
+      nonce: 'd2'.repeat(16),
+    }), { id: '100000000000000931', deleted });
+    assert.equal((await ctx.bridge.handleEnvelope(second)).reason, 'not_pending');
+    assert.equal(ctx.alerts.length, 1);
+    ctx.time.advance(ALERT_WINDOW_MS + 1);
+    const third = envelopeMessage(record({
+      rid: '100000000000000797',
+      nonce: 'd3'.repeat(16),
+    }), { id: '100000000000000932', deleted });
+    await ctx.bridge.handleEnvelope(third);
+    assert.equal(ctx.alerts.length, 2);
+    assert.ok(ctx.alerts[1].count >= 2);
+  });
+
+  it('sweeps seen message ids after 48 hours, bounded and periodic', () => {
+    const root = tempDir('phicc-seen-');
+    dirs.push(root);
+    const dir = path.join(root, 'envelope-seen');
+    const seen = new SeenIds(dir);
+    const start = 1_700_000_000_000;
+    const expired = [];
+    for (let n = 0; n < SEEN_SWEEP_LIMIT + 10; n += 1) {
+      const id = `9${String(n).padStart(17, '0')}`;
+      expired.push(id);
+      seen.add(id, start - SEEN_TTL_MS - 5);
+    }
+    const removed = seen.sweep(start, SEEN_SWEEP_LIMIT);
+    assert.equal(removed, SEEN_SWEEP_LIMIT);
+    const still = expired.filter((id) => fs.existsSync(path.join(dir, id)));
+    assert.equal(still.length, 10);
+    assert.equal(seen.sweep(start, SEEN_SWEEP_LIMIT), 10);
+    assert.equal(expired.some((id) => fs.existsSync(path.join(dir, id))), false);
+    const kept = '100000000000000940';
+    seen.add(kept, start);
+    assert.equal(seen.has(kept, start), true);
+    assert.equal(seen.has(kept, start + SEEN_TTL_MS + 1), false);
+
+    const legacy = '100000000000000941';
+    fs.writeFileSync(path.join(dir, legacy), '1\n', { mode: 0o600 });
+    assert.equal(seen.sweep(start), 0);
+    assert.equal(Number(fs.readFileSync(path.join(dir, legacy), 'utf8')), start);
+    assert.equal(seen.sweep(start + SEEN_TTL_MS + 1) >= 1, true);
+    assert.equal(fs.existsSync(path.join(dir, legacy)), false);
+
+    const time = clocked(start);
+    const ctx = setup({ time });
+    dirs.push(ctx.root);
+    const oldId = '100000000000000942';
+    ctx.bridge.envelope.seen.add(oldId, time.now() - SEEN_TTL_MS - 10);
+    assert.equal(ctx.bridge.envelope.sweepSeen(), 1);
+    assert.equal(fs.existsSync(path.join(ctx.bridge.stateDir(), 'envelope-seen', oldId)), false);
+    const later = '100000000000000943';
+    ctx.bridge.envelope.seen.add(later, time.now() - SEEN_TTL_MS - 10);
+    assert.equal(ctx.bridge.envelope.sweepSeen(), 0);
+    assert.equal(fs.existsSync(path.join(ctx.bridge.stateDir(), 'envelope-seen', later)), true);
+    time.advance(60 * 1000);
+    assert.equal(ctx.bridge.envelope.sweepSeen(), 1);
+    assert.equal(fs.existsSync(path.join(ctx.bridge.stateDir(), 'envelope-seen', later)), false);
+    assert.equal(stripOutbound('https://discordapp.com/api/webhooks/1/abc').includes('api/webhooks'), false);
+  });
+
+  it('requires botUserId when the envelope is enabled and loads the previous key file', () => {
+    const root = tempDir('phicc-bot-user-');
+    dirs.push(root);
+    const config = defaultConfig();
+    config.features.enabled = true;
+    config.features.killSwitchFile = path.join(root, 'STOP');
+    config.discord.applicationId = '100000000000000999';
+    config.discord.botUserId = '';
+    config.discord.guildIds = ['100000000000000111'];
+    config.discord.channelIds = ['100000000000000222'];
+    config.discord.allowedUserIds = ['100000000000000333'];
+    config.discord.allowedRoleIds = [];
+    config.policy.usersOnly = true;
+    config.policy.requireMention = true;
+    config.wake.allowedHosts = ['hooks.example'];
+    config.envelope.enabled = true;
+    config.envelope.outboxChannelId = '100000000000000900';
+    config.envelope.webhookIds = ['100000000000000555'];
+    const env = {
+      COMMS_WEBHOOK_URL: 'https://hooks.example/wake',
+      COMMS_WEBHOOK_KEY: 'test-webhook-key',
+      QUEUE_HMAC_KEY: QUEUE_KEY,
+      ENVELOPE_HMAC_KEY: KEY,
+    };
+    assert.throws(() => assertReady(config, { env }), (err) => err.code === 'BOT_USER_REQUIRED');
+    config.discord.botUserId = '100000000000000444';
+    assert.doesNotThrow(() => assertReady(config, { env }));
+
+    const prevFile = path.join(root, 'envelope_hmac_previous');
+    fs.writeFileSync(prevFile, `${PREVIOUS}\n`, { mode: 0o600 });
+    const now = 1_700_000_000_000;
+    const attached = attachToClient(new EventEmitter(), {
+      config: enabledConfig({
+        features: { enabled: false, killSwitchFile: path.join(root, 'STOP2') },
+        queue: { dir: path.join(root, 'queue') },
+        envelope: { enabled: true, outboxChannelId: OUTBOX, webhookIds: [WEBHOOK] },
+      }),
+      env: {
+        DBR_TOKEN_LOCK_DIR: path.join(root, 'locks'),
+        ENVELOPE_HMAC_KEY: KEY,
+        ENVELOPE_HMAC_KEY_PREVIOUS_FILE: prevFile,
+        ENVELOPE_ROTATION_SINCE: String(now - 1000),
+      },
+      now: () => now,
+      log: memoryLogger(),
+      lock: false,
+      autostart: false,
+    });
+    assert.equal(attached.envelope.previousKey, PREVIOUS);
+    assert.deepEqual(attached.envelope.keys(), [KEY, PREVIOUS]);
+    attached.envelope.previousSince = now - ROTATION_WINDOW_MS - 1;
+    assert.deepEqual(attached.envelope.keys(), [KEY]);
+    assert.equal(JSON.stringify(attached.envelope.keys()).includes('file'), false);
+    attached.stop();
   });
 });

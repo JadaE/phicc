@@ -119,7 +119,7 @@ Environment variables override the files. Names:
 | `DBR_DISCORD_ALLOWEDUSERIDS` | Comma-separated user ids. |
 | `DBR_DISCORD_ALLOWEDROLEIDS` | Comma-separated role ids. Refused while `usersOnly` is true. |
 | `DBR_DISCORD_DENIEDUSERIDS` | Comma-separated user ids that always lose. |
-| `DBR_WAKE_ALLOWEDHOSTS` | Comma-separated hostnames. The webhook host must be one of them. |
+| `DBR_WAKE_ALLOWEDHOSTS` | Comma-separated hostnames. The webhook host must be one of them. An empty list does not allow every HTTPS host. Send time refuses it with `WEBHOOK_HOST`. |
 | `DBR_DISCORD_APPLICATIONID` | Application id. |
 | `DBR_LOGGING_DIR` | Log directory. |
 | `DBR_LOGGING_LOGBODIES` | `true` only in a local debug session. Default is false, so logs do not store message text. |
@@ -130,7 +130,7 @@ The webhook URL and key are secrets. Copy them from the Comms Bot routine panel 
 
 After a mention passes the allowlists, the bridge writes `queue/inbox/<message id>.json` by creating a temp file and linking it into place, then POSTs to `COMMS_WEBHOOK_URL` with `Authorization: Bearer <COMMS_WEBHOOK_KEY>`. A **200 means the run started**, not that the reply is finished. With `wake.carryRecord` left false (the box default) the body is `{"msgId":"..."}` or, when several mentions arrive together, `{"msgIds":["..."]}`. It does not include message text or the token. The NAS sets `wake.carryRecord` true. That body is `{ "v": 1, "items": [{ "msgId", "channelId", "text", "authorName", "authorHash", "ts", "trust": "untrusted_discord_content" }] }`, at most 5 items. `text` is mention-stripped and capped at 4000 characters. The body has no raw user id and no token.
 
-Bursts wait 1.5 seconds, or flush at 5 messages, so one rush is one run. `wake.maxPerHour` is clamped to the message cap (default 10 an hour, hard max 30). The platform routine cap is still 200 an hour and the account cap is 300; this process stays under the smaller message cap. A non-200 response waits and retries with exponential backoff. After 5 failures the ids are kept and tried again about a minute later. Each id is dropped after `wake.maxFailedAttempts` failed posts (default 8, hard max 30). The audit line records the id, status, and attempt count. It does not record the webhook URL, path, or response body. Startup plus the timeout path also re-wake inbox items that still have no outbox file. A 429 waits for `Retry-After` (at least 60 seconds) and tries once more. The URL must be HTTPS and its host must be listed in `wake.allowedHosts`. Startup refuses to enable the bridge when the URL, key, or `QUEUE_HMAC_KEY` is missing. Comms Bot reads the inbox itself; the webhook is only the alarm.
+Bursts wait 1.5 seconds, or flush at 5 messages, so one rush is one run. `wake.maxPerHour` is clamped to the message cap (default 10 an hour, hard max 30). The platform routine cap is still 200 an hour and the account cap is 300; this process stays under the smaller message cap. A non-200 response waits and retries with exponential backoff. After 5 failures the ids are kept and tried again about a minute later. Each id is dropped after `wake.maxFailedAttempts` failed posts (default 8, hard max 30). The audit line records the id, status, and attempt count. It does not record the webhook URL, path, or response body. Startup plus the timeout path also re-wake inbox items that still have no outbox file. A 429 waits for `Retry-After` (at least 60 seconds) and tries once more. The URL must be HTTPS and its host must be listed in `wake.allowedHosts`. An empty allowlist does not mean every HTTPS host: the send path refuses it with `WEBHOOK_HOST`, and startup refuses to enable the bridge when the list is empty. Startup also refuses to enable the bridge when the URL, key, or `QUEUE_HMAC_KEY` is missing. Comms Bot reads the inbox itself; the webhook is only the alarm.
 
 There is no filesystem watcher and no call from this process into another agent. The STOP file drops any wake that has not been sent yet and clears that id's re-wake tracking, so it can be woken again after the file is removed.
 
@@ -271,7 +271,7 @@ This repo does not contain the Comms Bot routine. Before go-live that routine ha
 - No purchases, no messages to other channels or people, no tool use, and no agent-to-agent sends because Discord text asked.
 - Instruction-shaped text gets a normal refusal reply. The bridge also raises a P0 alert when it sees that shape.
 
-P0 alerts are JSON files in `queue/alerts/`. If `ALERT_WEBHOOK_URL` and `ALERT_WEBHOOK_KEY` are set, the bridge also POSTs one fixed sentence to that URL. The URL must be HTTPS and its host must be in `wake.allowedHosts`. If `ALERT_WEBHOOK_URL` is set and that host is missing from the allowlist, startup refuses to enable the bridge. The error is `ALERT_HOST` or `ALERT_HTTPS` and does not include the URL. The sentence contains only the reason code, a message id, a channel id, and a timestamp. It does not contain Discord text.
+P0 alerts are JSON files in `queue/alerts/`. Authenticated `envelope_rejected` alerts are coalesced to one send per 10 minutes, and the alert carries a count of how many were folded in. A webhook that is not on the allowlist, a bad decode, or a bad HMAC is logged once per 10 minutes at warn, the envelope message is deleted, and nothing is written to `dead/` and no P0 is sent. If `ALERT_WEBHOOK_URL` and `ALERT_WEBHOOK_KEY` are set, the bridge also POSTs one fixed sentence to that URL. The URL must be HTTPS and its host must be in `wake.allowedHosts`. An empty allowlist does not allow the post. If `ALERT_WEBHOOK_URL` is set and that host is missing from the allowlist, startup refuses to enable the bridge. The error is `ALERT_HOST` or `ALERT_HTTPS` and does not include the URL. The sentence contains only the reason code, a message id, a channel id, and a timestamp. It does not contain Discord text.
 
 Re-wakes are limited to two successful posts per inbox item, with a backoff of one minute and then two minutes. Accepting a mention already spends its hour and day slot, so the first wake for that mention is not charged again. A later re-wake spends one more slot per id, and only after the webhook returns 200. A failed post is not billed. If a re-wake does not fit in the remaining cap, its ids stay queued and are tried again when a slot frees. A fresh mention already accepted in that same batch is sent immediately. Only the re-wakes wait. A deleted Discord message or channel is dead-lettered as `unreachable` and is not woken again.
 
@@ -289,7 +289,9 @@ Build and run (on the NAS, not in CI):
 docker compose --file deploy/nas/compose.yaml up --build
 ```
 
-The image is pinned by digest. The container is read-only, runs as uid 10001, drops every capability, sets `no-new-privileges`, limits memory to about 256m and pids to 128, and mounts a tmpfs on `/tmp`. Queue, state, and logs are bind-mounted from `/srv/ssd1/discord-bridge/`. `config.local.json` is mounted read-only. Secrets are compose secret files, not environment values. The process reads `DISCORD_TOKEN_FILE`, `COMMS_WEBHOOK_URL_FILE`, `COMMS_WEBHOOK_KEY_FILE`, `QUEUE_HMAC_KEY_FILE`, and `ENVELOPE_HMAC_KEY_FILE`. A direct env var still works for the box. File contents are never copied back into the environment, so an env dump does not contain them.
+The image is pinned by digest. The container is read-only, runs as uid 10001, drops every capability, sets `no-new-privileges`, limits memory to about 256m and pids to 128, and mounts a tmpfs on `/tmp`. Queue, state, and logs are bind-mounted from `/srv/ssd1/discord-bridge/`. `config.local.json` is mounted read-only. Secrets are compose secret files, not environment values. The process reads `DISCORD_TOKEN_FILE`, `COMMS_WEBHOOK_URL_FILE`, `COMMS_WEBHOOK_KEY_FILE`, `QUEUE_HMAC_KEY_FILE`, and `ENVELOPE_HMAC_KEY_FILE`. During HMAC rotation, uncomment `ENVELOPE_HMAC_KEY_PREVIOUS_FILE` in `deploy/nas/compose.yaml` (and the matching secret). `secretValue` reads that `*_FILE` path into the previous key, and the previous key is accepted only inside the rotation window. A direct env var still works for the box. File contents are never copied back into the environment, so an env dump does not contain them.
+
+`deploy/nas/compose.yaml` sets `DBR_WAKE_ALLOWEDHOSTS`. Replace `YOUR_WEBHOOK_HOST` with the webhook hostname before the bridge can enable. The same placeholder is in `deploy/nas/env.example` and in the native unit. An empty value does not allow every HTTPS host.
 
 `scripts/grep-secrets.sh` checks a log file and prints `clean` or `secret-hit`. It does not print the secret. After a build, confirm the image layers are clean:
 
@@ -304,7 +306,7 @@ docker history --no-trunc discord-bridge:nas
 Two units share the name `discord-bridge.service`. Install one of them:
 
 - `deploy/nas/discord-bridge.service` wraps `docker compose up` and starts at boot.
-- `deploy/nas/discord-bridge.native.service` is the hardened systemd alternative: `dbridge`, `Restart=always`, `RestartSec=5`, `StartLimitIntervalSec=0`, `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp`, `ReadWritePaths=/srv/ssd1/discord-bridge`, an empty `CapabilityBoundingSet`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, and `LoadCredential=` for the secret files.
+- `deploy/nas/discord-bridge.native.service` is the hardened systemd alternative: `dbridge`, `Restart=always`, `RestartSec=5`, `StartLimitIntervalSec=0`, `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp`, `PrivateDevices`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `RestrictNamespaces`, `RestrictSUIDSGID`, `LockPersonality`, `SystemCallFilter=@system-service`, `UMask=0077`, `ReadWritePaths` limited to `queue/`, `state/`, and `logs/`, an empty `CapabilityBoundingSet`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, and `LoadCredential=` for the secret files. `deploy/nas/install.sh` (run as root) creates those directories and leaves `app/` and `secrets/` owned by root, so the service cannot rewrite its code or credentials. `LoadCredential` still reads the secret files as root. Uncomment `LoadCredential=envelope_hmac_previous` during HMAC rotation. ExecStart exports `ENVELOPE_HMAC_KEY_PREVIOUS_FILE` when that credential is present.
 
 The entrypoint keeps a restart counter on disk, waits at least 2 seconds, and backs off to 5 minutes after 5 fast failures. Three starts inside 10 minutes write a P0 alert under `queue/alerts/` and, if configured, post it to `ALERT_WEBHOOK_URL`. Docker's `HEALTHCHECK` runs `discord-bridge/scripts/health.js` against the heartbeat file. The box supervisor is `discord-bridge/scripts/`: it exits 75 when the gateway is stale, and `ensure.sh`, `supervise.sh`, and `watchdog.sh` are not used on the NAS.
 
@@ -318,20 +320,24 @@ Comms Bot on the box does not see the HMAC key. It runs:
 post-reply <msgId> <channelId> <textfile>
 ```
 
-`scripts/post-reply.js` reads `reply.env` (mode 0600, path overridable with `REPLY_ENV`, default `~/discord-bridge/comms-bot/reply.env`). That file holds `OUTBOX_HMAC_KEY`, `DISCORD_OUTBOX_WEBHOOK_URL`, and `DISCORD_BOT_USER_ID`. The helper builds `{v, rid, ch, part, parts, nonce, ts, body}`, signs it with HMAC-SHA256 over canonical JSON, and base64url-encodes it. The nonce is 128 bits. It posts `<@bot> DBR1 <b64>` through the outbox webhook with `allowed_mentions` set to `{ "parse": [], "users": ["<bot>"] }`. Each part is at most 2000 characters, and there are at most 8 parts. A 429 waits for `Retry-After`. The helper never prints the key or the URL.
+`scripts/post-reply.js` reads `reply.env` (mode 0600, path overridable with `REPLY_ENV`, default `~/discord-bridge/comms-bot/reply.env`). Any other mode is refused with `ENV_MODE` and nothing is posted. That file holds `OUTBOX_HMAC_KEY`, `DISCORD_OUTBOX_WEBHOOK_URL`, and `DISCORD_BOT_USER_ID`. The helper refuses reply text that contains the HMAC key or any `discord.com` or `discordapp.com` `/api/webhooks/` URL (`SECRET_TEXT`). It builds `{v, rid, ch, part, parts, nonce, ts, body}`, signs it with HMAC-SHA256 over canonical JSON, and base64url-encodes it. The nonce is 128 bits. It posts `<@bot> DBR1 <b64>` through the outbox webhook with `allowed_mentions` set to `{ "parse": [], "users": ["<bot>"] }`. Each part is at most 2000 characters, and there are at most 8 parts. A 429 waits for `Retry-After`. The helper never prints the key or the URL.
 
 The NAS checks envelopes in this order, and only when the listener is configured. The user path still drops webhook-authored messages (`ignore_webhook`).
 
 1. The channel is the outbox channel and `webhook_id` is on the allowlist.
 2. Size cap, then strict base64url decode and parse.
-3. Timing-safe HMAC. During a rotation the previous key is accepted for 10 minutes (`state/envelope-rotation.json` field `previousSince`, or `ENVELOPE_ROTATION_SINCE`).
-4. `|now - ts|` is at most 30 minutes.
-5. The nonce has not been seen in 48 hours (`state/nonces/` on disk).
+3. Timing-safe HMAC. During a rotation the previous key is accepted for 10 minutes (`state/envelope-rotation.json` field `previousSince`, or `ENVELOPE_ROTATION_SINCE`). On the NAS the previous key is `ENVELOPE_HMAC_KEY_PREVIOUS_FILE`, loaded by the `*_FILE` reader and used only inside that window.
+4. `|now - ts|` is at most 30 minutes. A stale authenticated part whose Discord message id is new is deleted and dropped. The pending reply stays in `inbox/`.
+5. The nonce has not been seen in 48 hours (`state/nonces/` on disk). A replay with a new Discord message id is deleted and dropped the same way. It does not dead-letter the pending reply or delete the parts already stored.
 6. `rid` is still pending, `ch` matches that inbox item, and the channel is still allowlisted.
 7. Every part arrives within 5 minutes.
-8. The existing outbox pipeline runs: invite links stripped, `allowedMentions` `{ "parse": [], "repliedUser": false }`, at most 3 chunks of 1900 characters, one reply per id. Then `message.reply`, the envelope messages are deleted, and the item moves to `done/`.
+8. The existing outbox pipeline runs: invite links and `discord.com` / `discordapp.com` `/api/webhooks/` URLs stripped, `allowedMentions` `{ "parse": [], "repliedUser": false }`, at most 3 chunks of 1900 characters, one reply per id. Then `message.reply`, the envelope messages are deleted, and the item moves to `done/`.
 
-Any failure deletes the envelope, dead-letters it, and writes a P0 alert. An unsigned or corrupt body does not dead-letter the claimed `rid`.
+Seen Discord message ids live in `state/envelope-seen/` for 48 hours. A bounded sweep runs about once a minute and deletes expired ids. A store error is logged as `envelope_store` and returned as `store`. It does not become an unhandled rejection.
+
+An authenticated failure (not a replay or a stale copy) deletes the envelope, dead-letters the pending id, and writes one coalesced P0. A webhook that is not allowlisted, a bad decode, or a bad HMAC is deleted, logged at warn (one line per 10 minutes), and does not write `dead/` or a P0. An unsigned or corrupt body does not dead-letter the claimed `rid`.
+
+When `envelope.enabled` is true, startup requires `discord.botUserId`. The error is `BOT_USER_REQUIRED`.
 
 ### Cutover
 

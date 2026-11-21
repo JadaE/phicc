@@ -358,6 +358,7 @@ function assertReady(config, options = {}) {
     assertSnowflakeList([envelope.outboxChannelId], 'SNOWFLAKE');
     assertSnowflakeList(envelope.webhookIds || [], 'SNOWFLAKE');
     if (!envelope.webhookIds || envelope.webhookIds.length === 0) throw refuse('ENVELOPE_WEBHOOK');
+    if (!discord.botUserId) throw refuse('BOT_USER_REQUIRED');
     const envelopeKey = secretValue(env, envelope.hmacEnv || 'ENVELOPE_HMAC_KEY');
     if (!envelopeKey || String(envelopeKey).length < 16) throw refuse('ENVELOPE_HMAC_REQUIRED');
   }
