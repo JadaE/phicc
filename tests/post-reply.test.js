@@ -142,7 +142,8 @@ describe('post-reply helper', () => {
       `OUTBOX_HMAC_KEY=${KEY}`,
       `DISCORD_OUTBOX_WEBHOOK_URL=${URL}`,
       `DISCORD_BOT_USER_ID=${BOT}`,
-    ].join('\n'));
+    ].join('\n'), { mode: 0o600 });
+    fs.chmodSync(envFile, 0o600);
     const lines = [];
     const code = await main(['node', 'post-reply', MSG, CHANNEL, textFile], {
       envFile,
@@ -193,6 +194,66 @@ describe('post-reply helper', () => {
         transport: async () => { calls.push(1); return { status: 204 }; },
       }),
       (err) => err.code === 'WEBHOOK_HOST',
+    );
+    assert.equal(calls.length, 0);
+  });
+
+  it('refuses a reply.env that is not mode 0600 and text that contains a secret', async () => {
+    const root = tempDir('phicc-post-reply-guard-');
+    dirs.push(root);
+    const envFile = path.join(root, 'reply.env');
+    const body = [
+      `OUTBOX_HMAC_KEY=${KEY}`,
+      `DISCORD_OUTBOX_WEBHOOK_URL=${URL}`,
+      `DISCORD_BOT_USER_ID=${BOT}`,
+    ].join('\n');
+    fs.writeFileSync(envFile, body, { mode: 0o644 });
+    fs.chmodSync(envFile, 0o644);
+    const calls = [];
+    const transport = async () => {
+      calls.push(1);
+      return { status: 204, headers: {} };
+    };
+    await assert.rejects(
+      () => postReply({
+        msgId: MSG,
+        channelId: CHANNEL,
+        text: 'hello',
+        envFile,
+        transport,
+      }),
+      (err) => err.code === 'ENV_MODE',
+    );
+    fs.chmodSync(envFile, 0o600);
+    await assert.rejects(
+      () => postReply({
+        msgId: MSG,
+        channelId: CHANNEL,
+        text: `the key is ${KEY}`,
+        env: env(),
+        transport,
+      }),
+      (err) => err.code === 'SECRET_TEXT',
+    );
+    await assert.rejects(
+      () => postReply({
+        msgId: MSG,
+        channelId: CHANNEL,
+        text: 'see https://discord.com/api/webhooks/123/abc-token',
+        env: env(),
+        transport,
+      }),
+      (err) => err.code === 'SECRET_TEXT',
+    );
+    await assert.rejects(
+      () => postReply({
+        msgId: MSG,
+        channelId: CHANNEL,
+        text: 'see https://discordapp.com/api/webhooks/456/other-token',
+        env: env(),
+        transport,
+      }),
+      (err) => err.code === 'SECRET_TEXT',
     );
     assert.equal(calls.length, 0);
   });

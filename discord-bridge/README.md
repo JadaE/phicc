@@ -25,6 +25,8 @@ standalone.js      process entry used by ../bridge.js
 
 The envelope listener and `wake.carryRecord` stay off unless config turns them on. `PHICC_BRIDGE_ENABLED` is unchanged. Never grant Administrator. The outbox channel overwrite adds Manage Messages (8192) on that channel only.
 
+`wake.allowedHosts` has to list the webhook hostname. An empty list does not allow every HTTPS host. `post-reply.js` refuses a `reply.env` that is not mode 0600, and it refuses reply text that contains the HMAC key or a Discord webhook URL. Outbound replies also strip those webhook URLs. When the envelope listener is enabled, `discord.botUserId` is required.
+
 ## Forking
 
 1. Copy `discord-bridge/`, `bridge.js`, `config.example.json`, `scripts/perm-calc.js`, and `RUNBOOK.md`.

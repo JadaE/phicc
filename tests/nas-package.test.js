@@ -49,6 +49,12 @@ describe('NAS package', () => {
     assert.equal(/DISCORD_TOKEN:\s*\S+/.test(compose), false);
     assert.match(compose, /DBR_WAKE_CARRYRECORD:\s*"true"/);
     assert.match(compose, /DBR_BACKFILL_ENABLED:\s*"true"/);
+    assert.match(compose, /DBR_WAKE_ALLOWEDHOSTS:\s*"YOUR_WEBHOOK_HOST"/);
+    assert.match(compose, /ENVELOPE_HMAC_KEY_PREVIOUS_FILE/);
+    const envExample = read('deploy/nas/env.example');
+    assert.match(envExample, /DBR_WAKE_ALLOWEDHOSTS=YOUR_WEBHOOK_HOST/);
+    assert.match(envExample, /ENVELOPE_HMAC_KEY_PREVIOUS_FILE/);
+    assert.equal(envExample.includes('discord.com/api/webhooks/'), false);
   });
 
   it('ships the compose wrapper and the hardened systemd alternative', () => {
@@ -64,8 +70,24 @@ describe('NAS package', () => {
     assert.match(native, /ProtectSystem=strict/);
     assert.match(native, /ProtectHome=yes/);
     assert.match(native, /PrivateTmp=yes/);
-    assert.match(native, /ReadWritePaths=\/srv\/ssd1\/discord-bridge/);
+    assert.match(native, /PrivateDevices=yes/);
+    assert.match(native, /ProtectKernelTunables=yes/);
+    assert.match(native, /ProtectKernelModules=yes/);
+    assert.match(native, /ProtectKernelLogs=yes/);
+    assert.match(native, /ProtectControlGroups=yes/);
+    assert.match(native, /RestrictNamespaces=yes/);
+    assert.match(native, /RestrictSUIDSGID=yes/);
+    assert.match(native, /LockPersonality=yes/);
+    assert.match(native, /SystemCallFilter=@system-service/);
+    assert.match(native, /UMask=0077/);
+    assert.match(native, /ReadWritePaths=\/srv\/ssd1\/discord-bridge\/queue \/srv\/ssd1\/discord-bridge\/state \/srv\/ssd1\/discord-bridge\/logs/);
+    assert.equal(/ReadWritePaths=\/srv\/ssd1\/discord-bridge\s/.test(native), false);
+    assert.match(native, /ENVELOPE_HMAC_KEY_PREVIOUS_FILE/);
+    assert.match(native, /DBR_WAKE_ALLOWEDHOSTS=YOUR_WEBHOOK_HOST/);
     assert.match(native, /CapabilityBoundingSet=/);
+    const install = read('deploy/nas/install.sh');
+    assert.match(install, /chown -R root:root "\$ROOT\/app" "\$ROOT\/secrets"/);
+    assert.match(install, /chmod 700 "\$ROOT\/secrets"/);
     assert.match(native, /RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX/);
     assert.match(native, /LoadCredential=discord_token:/);
     assert.match(native, /WantedBy=multi-user\.target/);

@@ -11,7 +11,7 @@ Type=simple
 User=dbridge
 Group=dbridge
 WorkingDirectory=/srv/ssd1/discord-bridge
-ExecStart=/bin/sh -c 'export DISCORD_TOKEN_FILE="$$CREDENTIALS_DIRECTORY/discord_token"; export COMMS_WEBHOOK_URL_FILE="$$CREDENTIALS_DIRECTORY/comms_webhook_url"; export COMMS_WEBHOOK_KEY_FILE="$$CREDENTIALS_DIRECTORY/comms_webhook_key"; export QUEUE_HMAC_KEY_FILE="$$CREDENTIALS_DIRECTORY/queue_hmac"; export ENVELOPE_HMAC_KEY_FILE="$$CREDENTIALS_DIRECTORY/envelope_hmac"; exec /usr/bin/node /srv/ssd1/discord-bridge/app/deploy/nas/entrypoint.js'
+ExecStart=/bin/sh -c 'export DISCORD_TOKEN_FILE="$$CREDENTIALS_DIRECTORY/discord_token"; export COMMS_WEBHOOK_URL_FILE="$$CREDENTIALS_DIRECTORY/comms_webhook_url"; export COMMS_WEBHOOK_KEY_FILE="$$CREDENTIALS_DIRECTORY/comms_webhook_key"; export QUEUE_HMAC_KEY_FILE="$$CREDENTIALS_DIRECTORY/queue_hmac"; export ENVELOPE_HMAC_KEY_FILE="$$CREDENTIALS_DIRECTORY/envelope_hmac"; if [ -f "$$CREDENTIALS_DIRECTORY/envelope_hmac_previous" ]; then export ENVELOPE_HMAC_KEY_PREVIOUS_FILE="$$CREDENTIALS_DIRECTORY/envelope_hmac_previous"; fi; exec /usr/bin/node /srv/ssd1/discord-bridge/app/deploy/nas/entrypoint.js'
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=0
@@ -19,7 +19,17 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=/srv/ssd1/discord-bridge
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+UMask=0077
+ReadWritePaths=/srv/ssd1/discord-bridge/queue /srv/ssd1/discord-bridge/state /srv/ssd1/discord-bridge/logs
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LoadCredential=discord_token:/srv/ssd1/discord-bridge/secrets/discord_token
@@ -27,6 +37,10 @@ LoadCredential=comms_webhook_url:/srv/ssd1/discord-bridge/secrets/comms_webhook_
 LoadCredential=comms_webhook_key:/srv/ssd1/discord-bridge/secrets/comms_webhook_key
 LoadCredential=queue_hmac:/srv/ssd1/discord-bridge/secrets/queue_hmac
 LoadCredential=envelope_hmac:/srv/ssd1/discord-bridge/secrets/envelope_hmac
+# Uncomment the next line during HMAC rotation. install.sh keeps secrets/ root-owned.
+# ExecStart exports ENVELOPE_HMAC_KEY_PREVIOUS_FILE when this credential is present.
+# The previous key is accepted only inside the rotation window.
+#LoadCredential=envelope_hmac_previous:/srv/ssd1/discord-bridge/secrets/envelope_hmac_previous
 Environment=NODE_ENV=production
 Environment=DBR_FEATURES_ENABLED=true
 Environment=DBR_QUEUE_DIR=/srv/ssd1/discord-bridge/queue
@@ -35,6 +49,7 @@ Environment=DBR_STATE_DIR=/srv/ssd1/discord-bridge/state
 Environment=DBR_LIVENESS_ENABLED=true
 Environment=DBR_LIVENESS_STRICT=true
 Environment=DBR_WAKE_CARRYRECORD=true
+Environment=DBR_WAKE_ALLOWEDHOSTS=YOUR_WEBHOOK_HOST
 Environment=DBR_BACKFILL_ENABLED=true
 
 [Install]

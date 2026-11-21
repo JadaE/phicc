@@ -47,6 +47,7 @@ async function main(options = {}) {
     dir: path.join(queueDir, 'alerts'),
     url: optionalSecret('ALERT_WEBHOOK_URL'),
     key: optionalSecret('ALERT_WEBHOOK_KEY'),
+    // Empty is not every HTTPS host. parseHttpsWebhook fails closed without a list.
     allowedHosts: String(process.env.DBR_WAKE_ALLOWEDHOSTS || '')
       .split(',')
       .map((host) => host.trim())

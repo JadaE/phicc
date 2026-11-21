@@ -150,8 +150,26 @@ describe('comms bot wake handoff', () => {
 
   it('refuses plain http and keeps ids after repeated wake failures', async () => {
     await assert.rejects(
-      postWebhook({ url: 'http://hooks.example/wake', key: 'test-webhook-key', body: {} }),
+      postWebhook({
+        url: 'http://hooks.example/wake',
+        key: 'test-webhook-key',
+        body: {},
+        allowedHosts: ['hooks.example'],
+      }),
       (err) => err.code === 'WEBHOOK_HTTPS' && !err.message.includes('test-webhook-key'),
+    );
+    await assert.rejects(
+      postWebhook({
+        url: 'https://hooks.example/wake',
+        key: 'test-webhook-key',
+        body: {},
+        allowedHosts: [],
+      }),
+      (err) => err.code === 'WEBHOOK_HOST' && !String(err.message).includes('hooks.example'),
+    );
+    await assert.rejects(
+      postWebhook({ url: 'https://hooks.example/wake', key: 'test-webhook-key', body: {} }),
+      (err) => err.code === 'WEBHOOK_HOST',
     );
     const failing = harness({
       giveUpRetryMs: 60000,
@@ -199,6 +217,7 @@ describe('comms bot wake handoff', () => {
         url: 'https://hooks.example/wake',
         key: 'test-webhook-key',
         body: { msgId: '81' },
+        allowedHosts: ['hooks.example'],
       });
       assert.equal(response.status, 200);
       assert.equal(captured.method, 'POST');

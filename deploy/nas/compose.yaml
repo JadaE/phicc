@@ -40,11 +40,16 @@ services:
       DBR_LIVENESS_STRICT: "true"
       DBR_WAKE_CARRYRECORD: "true"
       DBR_BACKFILL_ENABLED: "true"
+      # Required. An empty list does not allow every HTTPS host. Replace the placeholder.
+      DBR_WAKE_ALLOWEDHOSTS: "YOUR_WEBHOOK_HOST"
       DISCORD_TOKEN_FILE: /run/secrets/discord_token
       COMMS_WEBHOOK_URL_FILE: /run/secrets/comms_webhook_url
       COMMS_WEBHOOK_KEY_FILE: /run/secrets/comms_webhook_key
       QUEUE_HMAC_KEY_FILE: /run/secrets/queue_hmac
       ENVELOPE_HMAC_KEY_FILE: /run/secrets/envelope_hmac
+      # Uncomment during HMAC rotation, with the matching secret below.
+      # The previous key is accepted only inside the rotation window.
+      # ENVELOPE_HMAC_KEY_PREVIOUS_FILE: /run/secrets/envelope_hmac_previous
       ALERT_WEBHOOK_URL_FILE: /run/secrets/alert_webhook_url
       ALERT_WEBHOOK_KEY_FILE: /run/secrets/alert_webhook_key
     secrets:
@@ -53,6 +58,7 @@ services:
       - comms_webhook_key
       - queue_hmac
       - envelope_hmac
+      # - envelope_hmac_previous
       - alert_webhook_url
       - alert_webhook_key
 
@@ -67,6 +73,8 @@ secrets:
     file: /srv/ssd1/discord-bridge/secrets/queue_hmac
   envelope_hmac:
     file: /srv/ssd1/discord-bridge/secrets/envelope_hmac
+  # envelope_hmac_previous:
+  #   file: /srv/ssd1/discord-bridge/secrets/envelope_hmac_previous
   alert_webhook_url:
     file: /srv/ssd1/discord-bridge/secrets/alert_webhook_url
   alert_webhook_key:

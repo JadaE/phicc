@@ -10,6 +10,7 @@ const { signRecord } = require('./src/sign');
 const MAX_PARTS = 8;
 const MAX_CONTENT = 2000;
 const DISCORD_HOSTS = new Set(['discord.com', 'discordapp.com']);
+const WEBHOOK_URL_RE = /https?:\/\/(?:[a-z0-9-]+\.)*discord(?:app)?\.com\/api\/webhooks\/\S+/i;
 
 function coded(code) {
   const error = new Error(code);
@@ -40,7 +41,18 @@ function parseEnvFile(text) {
   return out;
 }
 
+function assertReplyEnvMode(file) {
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch (err) {
+    throw coded('MISSING_ENV');
+  }
+  if ((stat.mode & 0o777) !== 0o600) throw coded('ENV_MODE');
+}
+
 function loadReplyEnv(file) {
+  assertReplyEnvMode(file);
   let text;
   try {
     text = fs.readFileSync(file, 'utf8');
@@ -52,6 +64,15 @@ function loadReplyEnv(file) {
     throw coded('MISSING_ENV');
   }
   return env;
+}
+
+function assertReplyText(text, env) {
+  const body = text == null ? '' : String(text);
+  const key = env && env.OUTBOX_HMAC_KEY;
+  if (typeof key === 'string' && key.length > 0 && body.includes(key)) throw coded('SECRET_TEXT');
+  if (WEBHOOK_URL_RE.test(body)) throw coded('SECRET_TEXT');
+  const url = env && env.DISCORD_OUTBOX_WEBHOOK_URL;
+  if (typeof url === 'string' && url.length > 0 && body.includes(url)) throw coded('SECRET_TEXT');
 }
 
 function assertWebhookUrl(url) {
@@ -275,6 +296,7 @@ async function postReply(options) {
       throw coded('TEXT_FILE');
     }
   }
+  assertReplyText(text, env);
   const records = splitReply(text, {
     botId,
     key,
@@ -338,6 +360,8 @@ module.exports = {
   MAX_CONTENT,
   parseEnvFile,
   loadReplyEnv,
+  assertReplyEnvMode,
+  assertReplyText,
   assertWebhookUrl,
   encodeSigned,
   contentFor,
